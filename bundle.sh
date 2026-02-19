@@ -56,15 +56,28 @@ with tarfile.open(lgx_path, 'w:gz', format=tarfile.GNU_FORMAT) as tar:
 PY
 
 # Find the main library file.
-if [[ "$LIB_EXT" == ".dylib" ]]; then
-  MAIN_FILE=$(ls "$LIB_DIR" | grep '\.dylib$' | head -n 1)
-else
-  MAIN_FILE=$(ls "$LIB_DIR" | grep '\.so' | head -n 1)
-fi
+# Prefer the "main" field from metadata.json if present.
+MAIN_FILE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('main',''))" "$METADATA_FILE")
 
-if [[ -z "$MAIN_FILE" ]]; then
-  # Fall back to whatever is first in the directory
-  MAIN_FILE=$(ls "$LIB_DIR" | head -n 1)
+if [[ -n "$MAIN_FILE" ]]; then
+  if [[ -f "$LIB_DIR/$MAIN_FILE" ]]; then
+    : # exact match
+  elif [[ -f "$LIB_DIR/${MAIN_FILE}${LIB_EXT}" ]]; then
+    MAIN_FILE="${MAIN_FILE}${LIB_EXT}"
+  else
+    echo "error: main file '$MAIN_FILE' from metadata.json not found in $LIB_DIR" >&2
+    exit 1
+  fi
+else
+  if [[ "$LIB_EXT" == ".dylib" ]]; then
+    MAIN_FILE=$(ls "$LIB_DIR" | grep '\.dylib$' | head -n 1)
+  else
+    MAIN_FILE=$(ls "$LIB_DIR" | grep '\.so' | head -n 1)
+  fi
+
+  if [[ -z "$MAIN_FILE" ]]; then
+    MAIN_FILE=$(ls "$LIB_DIR" | head -n 1)
+  fi
 fi
 
 if [[ -z "$MAIN_FILE" ]]; then
