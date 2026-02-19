@@ -85,11 +85,29 @@ if [[ -z "$MAIN_FILE" ]]; then
   exit 1
 fi
 
+# Resolve symlinks into real copies so lgx (which may not preserve symlinks)
+# includes the short-name version aliases (e.g. libicuuc.76.dylib -> libicuuc.76.1.dylib).
+STAGE_DIR="$(mktemp -d)"
+cp -a "$LIB_DIR/." "$STAGE_DIR/"
+chmod -R u+w "$STAGE_DIR" 2>/dev/null || true
+find "$STAGE_DIR" -type l | while IFS= read -r link; do
+  target="$(readlink -f "$link" 2>/dev/null)" || true
+  if [[ -n "$target" && -f "$target" ]]; then
+    rm "$link"
+    cp "$target" "$link"
+  else
+    echo "  Warning: removing broken symlink $(basename "$link")"
+    rm "$link"
+  fi
+done
+
 echo "Adding variant $VARIANT to $LGX_FILE (main: $MAIN_FILE)..."
 lgx add "$LGX_FILE" \
   --variant "$VARIANT" \
-  --files "$LIB_DIR/." \
+  --files "$STAGE_DIR/." \
   --main "$MAIN_FILE" \
   -y
+
+rm -rf "$STAGE_DIR"
 
 echo "Done: $LGX_FILE"
