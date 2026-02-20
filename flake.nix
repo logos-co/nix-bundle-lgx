@@ -36,6 +36,7 @@
                   extraDirs = drv.extraDirs or [];
                   hostLibs = (drv.hostLibs or []) ++ [
                     "Qt*"
+                    "libQt*"
                     "liblogos_core*"
                     "liblogos_sdk*"
                     "libcharset*"
