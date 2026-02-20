@@ -34,7 +34,19 @@
                   inherit drv;
                   name = drv.pname or drv.name or "bundle";
                   extraDirs = drv.extraDirs or [];
-                  hostLibs = (drv.hostLibs or []) ++ [ "Qt*" ];
+                  hostLibs = (drv.hostLibs or []) ++ [
+                    "Qt*"
+                    "liblogos_core*"
+                    "liblogos_sdk*"
+                    "libcharset*"
+                    "libiconv*"
+                    "libintl*"
+                    "liblgx*"
+                    "libz*"
+                    "libicuuc*"
+                    "libicui18n*"
+                    "libicudata*"
+                  ];
                   warnOnBinaryData = true;
                 }
                 else drv;
