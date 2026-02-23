@@ -58,13 +58,24 @@ PY
 # Find the main library file.
 # Prefer the "main" field from metadata.json if present.
 MAIN_FILE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('main',''))" "$METADATA_FILE")
+PKG_TYPE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('type',''))" "$METADATA_FILE")
 
 if [[ -z "$MAIN_FILE" ]]; then
   echo "error: no 'main' field in metadata.json — cannot determine main library file" >&2
   exit 1
 fi
 
-MAIN_FILE="${MAIN_FILE}${LIB_EXT}"
+case "$PKG_TYPE" in
+  core|ui)
+    MAIN_FILE="${MAIN_FILE}${LIB_EXT}"
+    ;;
+  ui_qml)
+    ;;
+  *)
+    echo "error: unsupported package type '$PKG_TYPE'" >&2
+    exit 1
+    ;;
+esac
 
 if [[ ! -f "$LIB_DIR/$MAIN_FILE" ]]; then
   echo "error: main file '$MAIN_FILE' not found in $LIB_DIR" >&2
