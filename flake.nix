@@ -67,6 +67,10 @@
                 in if result.success then result.value else "{}";
 
               metadataFile = pkgs.writeText "${name}-metadata.json" metadataJson;
+
+              # Source directory of the module (for resolving icon paths etc.)
+              moduleSrc =
+                if drv ? src then "${drv.src}" else null;
             in
             pkgs.stdenv.mkDerivation {
               pname = "${name}-lgx";
@@ -83,6 +87,7 @@
               PACKAGE_NAME = name;
               METADATA_FILE = "${metadataFile}";
               LIB_EXT = if pkgs.stdenv.isDarwin then ".dylib" else ".so";
+              MODULE_SRC = if moduleSrc != null then moduleSrc else "";
 
               buildPhase = ''
                 bash ${./bundle.sh}
