@@ -10,6 +10,7 @@ set -euo pipefail
 #   METADATA_FILE — path to a JSON file with lgx manifest fields (may contain just {})
 #   LIB_EXT       — primary library extension (.dylib or .so)
 #   MODULE_SRC    — path to the module source tree (for resolving icon files etc.)
+#   EXTRA_DIRS    — newline-separated list of extra directories to bundle alongside lib
 
 LIB_DIR="$SRC_DRV/lib"
 
@@ -145,6 +146,21 @@ find "$STAGE_DIR" -type l | while IFS= read -r link; do
     rm "$link"
   fi
 done
+
+# Copy extra directories into the staging directory so they ship alongside lib contents.
+if [[ -n "${EXTRA_DIRS:-}" ]]; then
+  while IFS= read -r dir; do
+    [[ -z "$dir" ]] && continue
+    if [[ -d "$SRC_DRV/$dir" ]]; then
+      mkdir -p "$STAGE_DIR/$dir"
+      cp -a "$SRC_DRV/$dir/." "$STAGE_DIR/$dir/"
+      chmod -R u+w "$STAGE_DIR/$dir" 2>/dev/null || true
+      echo "Bundled extra directory: $dir"
+    else
+      echo "  Warning: extra directory '$dir' not found in $SRC_DRV"
+    fi
+  done <<< "$EXTRA_DIRS"
+fi
 
 # Copy the icon into the staging directory so it ships inside the variant.
 if [[ -n "$ICON_STAGE_FILE" && -f "$ICON_STAGE_FILE" ]]; then

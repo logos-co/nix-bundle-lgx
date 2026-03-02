@@ -88,6 +88,7 @@
               METADATA_FILE = "${metadataFile}";
               LIB_EXT = if pkgs.stdenv.isDarwin then ".dylib" else ".so";
               MODULE_SRC = if moduleSrc != null then moduleSrc else "";
+              EXTRA_DIRS = builtins.concatStringsSep "\n" (drv.extraDirs or []);
 
               buildPhase = ''
                 bash ${./bundle.sh}
