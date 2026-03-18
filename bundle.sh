@@ -5,12 +5,17 @@ set -euo pipefail
 #
 # Environment variables (set by the Nix derivation in flake.nix):
 #   SRC_DRV       — path to the source derivation (raw lib output, or bundle-dir processed)
-#   VARIANT       — target variant name (e.g. linux-amd64, darwin-arm64)
+#   VARIANT       — target variant name (e.g. linux-amd64-dev, darwin-arm64)
 #   PACKAGE_NAME  — base name for the .lgx file
 #   METADATA_FILE — path to a JSON file with lgx manifest fields (may contain just {})
 #   LIB_EXT       — primary library extension (.dylib or .so)
 #   MODULE_SRC    — path to the module source tree (for resolving icon files etc.)
 #   EXTRA_DIRS    — newline-separated list of extra directories to bundle alongside lib
+#
+# Dual-variant mode (optional):
+#   DUAL_VARIANT  — set to "1" to add a second (dev) variant
+#   DEV_SRC_DRV   — path to the raw (dev) derivation
+#   DEV_VARIANT   — dev variant name (e.g. linux-amd64-dev)
 
 LIB_DIR="$SRC_DRV/lib"
 
@@ -176,5 +181,56 @@ lgx add "$LGX_FILE" \
   -y
 
 rm -rf "$STAGE_DIR"
+
+# Dual-variant mode: add the dev variant from the raw (non-bundled) derivation.
+if [[ "${DUAL_VARIANT:-}" == "1" && -n "${DEV_SRC_DRV:-}" && -n "${DEV_VARIANT:-}" ]]; then
+  DEV_LIB_DIR="$DEV_SRC_DRV/lib"
+  if [[ ! -d "$DEV_LIB_DIR" ]]; then
+    echo "error: no lib/ directory found in $DEV_SRC_DRV for dev variant" >&2
+    exit 1
+  fi
+
+  DEV_STAGE_DIR="$(mktemp -d)"
+  cp -a "$DEV_LIB_DIR/." "$DEV_STAGE_DIR/"
+  chmod -R u+w "$DEV_STAGE_DIR" 2>/dev/null || true
+
+  # Resolve symlinks in dev staging directory
+  find "$DEV_STAGE_DIR" -type l | while IFS= read -r link; do
+    target="$(readlink -f "$link" 2>/dev/null)" || true
+    if [[ -n "$target" && -f "$target" ]]; then
+      rm "$link"
+      cp "$target" "$link"
+    else
+      echo "  Warning: removing broken symlink $(basename "$link")"
+      rm "$link"
+    fi
+  done
+
+  # Copy extra directories into dev staging directory
+  if [[ -n "${EXTRA_DIRS:-}" ]]; then
+    while IFS= read -r dir; do
+      [[ -z "$dir" ]] && continue
+      if [[ -d "$DEV_SRC_DRV/$dir" ]]; then
+        mkdir -p "$DEV_STAGE_DIR/$dir"
+        cp -a "$DEV_SRC_DRV/$dir/." "$DEV_STAGE_DIR/$dir/"
+        chmod -R u+w "$DEV_STAGE_DIR/$dir" 2>/dev/null || true
+      fi
+    done <<< "$EXTRA_DIRS"
+  fi
+
+  # Copy icon into dev staging directory
+  if [[ -n "$ICON_STAGE_FILE" && -f "$ICON_STAGE_FILE" ]]; then
+    cp "$ICON_STAGE_FILE" "$DEV_STAGE_DIR/$ICON_BASENAME"
+  fi
+
+  echo "Adding dev variant $DEV_VARIANT to $LGX_FILE (main: $MAIN_FILE)..."
+  lgx add "$LGX_FILE" \
+    --variant "$DEV_VARIANT" \
+    --files "$DEV_STAGE_DIR/." \
+    --main "$MAIN_FILE" \
+    -y
+
+  rm -rf "$DEV_STAGE_DIR"
+fi
 
 echo "Done: $LGX_FILE"

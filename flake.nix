@@ -1,5 +1,5 @@
 {
-  description = "Bundle Nix derivations into single-variant LGX packages";
+  description = "Bundle Nix derivations into LGX packages (dev, portable, or dual-variant)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -26,31 +26,36 @@
             else
               (if pkgs.stdenv.isAarch64 then "linux-arm64" else "linux-amd64");
 
-          mkLgxBundle = { portable ? false }: drv:
+          devVariantName = variantName + "-dev";
+
+          mkBundleDirForDrv = drv: mkBundleDir {
+            inherit drv;
+            name = drv.pname or drv.name or "bundle";
+            extraDirs = drv.extraDirs or [];
+            hostLibs = (drv.hostLibs or []) ++ [
+              "Qt*"
+              "libQt*"
+              "liblogos_core*"
+              "liblogos_sdk*"
+              "libcharset*"
+              "libiconv*"
+              "libintl*"
+              "liblgx*"
+              "libz*"
+              "libicuuc*"
+              "libicui18n*"
+              "libicudata*"
+            ];
+            warnOnBinaryData = true;
+          };
+
+          # mode: "dev" (raw nix output, -dev variant), "portable" (bundle-dir, no suffix), "dual" (both)
+          mkLgxBundle = { mode ? "dev" }: drv:
             let
               srcDrv =
-                if portable
-                then mkBundleDir {
-                  inherit drv;
-                  name = drv.pname or drv.name or "bundle";
-                  extraDirs = drv.extraDirs or [];
-                  hostLibs = (drv.hostLibs or []) ++ [
-                    "Qt*"
-                    "libQt*"
-                    "liblogos_core*"
-                    "liblogos_sdk*"
-                    "libcharset*"
-                    "libiconv*"
-                    "libintl*"
-                    "liblgx*"
-                    "libz*"
-                    "libicuuc*"
-                    "libicui18n*"
-                    "libicudata*"
-                  ];
-                  warnOnBinaryData = true;
-                }
-                else drv;
+                if mode == "dev"
+                then drv
+                else mkBundleDirForDrv drv;
 
               name = drv.pname or drv.name or "bundle";
 
@@ -72,7 +77,7 @@
               moduleSrc =
                 if drv ? src then "${drv.src}" else null;
             in
-            pkgs.stdenv.mkDerivation {
+            pkgs.stdenv.mkDerivation ({
               pname = "${name}-lgx";
               version = drv.version or "0";
 
@@ -83,7 +88,7 @@
               nativeBuildInputs = [ lgx pkgs.python3 ];
 
               SRC_DRV = "${srcDrv}";
-              VARIANT = variantName;
+              VARIANT = if mode == "dev" then devVariantName else variantName;
               PACKAGE_NAME = name;
               METADATA_FILE = "${metadataFile}";
               LIB_EXT = if pkgs.stdenv.isDarwin then ".dylib" else ".so";
@@ -98,15 +103,25 @@
                 mkdir -p $out
                 cp *.lgx $out/
               '';
-            };
+            } // (if mode == "dual" then {
+              # For dual mode, also pass the raw (dev) derivation so bundle.sh
+              # can add it as a second variant.
+              DEV_SRC_DRV = "${drv}";
+              DEV_VARIANT = devVariantName;
+              DUAL_VARIANT = "1";
+            } else {}));
         in
         {
-          # Bundle the lib output as-is; dynamic libraries are resolved from /nix/store at runtime.
-          default = mkLgxBundle {};
+          # Bundle the lib output as-is with a -dev variant name.
+          # Dynamic libraries resolve from /nix/store at runtime.
+          default = mkLgxBundle { mode = "dev"; };
 
-          # Apply nix-bundle-dir#qtPlugin first to produce a self-contained directory,
-          # then wrap it into an lgx package.
-          portable = mkLgxBundle { portable = true; };
+          # Apply nix-bundle-dir first to produce a self-contained directory,
+          # then wrap it into an lgx package with the portable variant name.
+          portable = mkLgxBundle { mode = "portable"; };
+
+          # Produce a dual-variant package containing both portable and dev variants.
+          dual = mkLgxBundle { mode = "dual"; };
         });
     };
 }
