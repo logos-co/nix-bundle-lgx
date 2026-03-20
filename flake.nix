@@ -2,7 +2,8 @@
   description = "Bundle Nix derivations into LGX packages (dev, portable, or dual-variant)";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    logos-nix.url = "github:logos-co/logos-nix";
+    nixpkgs.follows = "logos-nix/nixpkgs";
     logos-package.url = "github:logos-co/logos-package";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
   };
