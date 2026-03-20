@@ -8,7 +8,7 @@
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
   };
 
-  outputs = { self, nixpkgs, logos-package, nix-bundle-dir }:
+  outputs = { self, nixpkgs, logos-nix, logos-package, nix-bundle-dir }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
