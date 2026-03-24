@@ -111,6 +111,11 @@ PY
 
 # Find the main library file.
 # Prefer the "main" field from metadata.json if present.
+if [[ ! -f "$METADATA_FILE" ]]; then
+  echo "error: metadata file not found: $METADATA_FILE" >&2
+  exit 1
+fi
+
 MAIN_FILE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('main',''))" "$METADATA_FILE")
 PKG_TYPE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('type',''))" "$METADATA_FILE")
 
