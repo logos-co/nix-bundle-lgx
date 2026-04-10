@@ -89,7 +89,7 @@ patched = []
 for member, data in members:
     if member.name == 'manifest.json':
         manifest = json.loads(data)
-        for key in ('name', 'version', 'description', 'author', 'type', 'category', 'dependencies'):
+        for key in ('name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'view'):
             if metadata.get(key):
                 manifest[key] = metadata[key]
         # Set icon to the bundled filename (or keep the raw value if file was not found)
@@ -116,19 +116,34 @@ if [[ ! -f "$METADATA_FILE" ]]; then
   exit 1
 fi
 
-MAIN_FILE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('main',''))" "$METADATA_FILE")
-PKG_TYPE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('type',''))" "$METADATA_FILE")
+MAIN_FILE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('main','') or '')" "$METADATA_FILE")
+VIEW_FILE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('view','') or '')" "$METADATA_FILE")
+PKG_TYPE=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('type','') or '')" "$METADATA_FILE")
 
-if [[ -z "$MAIN_FILE" ]]; then
-  echo "error: no 'main' field in metadata.json — cannot determine main library file" >&2
+if [[ -z "$PKG_TYPE" ]]; then
+  echo "error: metadata.json is missing required 'type' field (expected: core, ui, or ui_qml)" >&2
   exit 1
 fi
 
 case "$PKG_TYPE" in
   core|ui)
+    if [[ -z "$MAIN_FILE" ]]; then
+      echo "error: no 'main' field in metadata.json — cannot determine main library file" >&2
+      exit 1
+    fi
     MAIN_FILE="${MAIN_FILE}${LIB_EXT}"
     ;;
   ui_qml)
+    # ui_qml contract:
+    #   - "view" (required) = QML entry point path
+    #   - "main" (optional) = backend Qt plugin lib base name
+    if [[ -z "$VIEW_FILE" ]]; then
+      echo "error: ui_qml module is missing required 'view' field in metadata.json" >&2
+      exit 1
+    fi
+    if [[ -n "$MAIN_FILE" ]]; then
+      MAIN_FILE="${MAIN_FILE}${LIB_EXT}"
+    fi
     ;;
   *)
     echo "error: unsupported package type '$PKG_TYPE'" >&2
@@ -136,7 +151,7 @@ case "$PKG_TYPE" in
     ;;
 esac
 
-if [[ ! -f "$LIB_DIR/$MAIN_FILE" ]]; then
+if [[ -n "$MAIN_FILE" && ! -f "$LIB_DIR/$MAIN_FILE" ]]; then
   echo "error: main file '$MAIN_FILE' not found in $LIB_DIR" >&2
   exit 1
 fi
@@ -178,12 +193,34 @@ if [[ -n "$ICON_STAGE_FILE" && -f "$ICON_STAGE_FILE" ]]; then
   echo "Bundled icon: $ICON_BASENAME"
 fi
 
-echo "Adding variant $VARIANT to $LGX_FILE (main: $MAIN_FILE)..."
-lgx add "$LGX_FILE" \
-  --variant "$VARIANT" \
-  --files "$STAGE_DIR/." \
-  --main "$MAIN_FILE" \
-  -y
+if [[ "$PKG_TYPE" == "ui_qml" ]]; then
+  if [[ "$VIEW_FILE" = /* || "$VIEW_FILE" == ".." || "$VIEW_FILE" == ../* || "$VIEW_FILE" == */../* || "$VIEW_FILE" == */.. ]]; then
+    echo "error: view path '$VIEW_FILE' must be a relative path without '..' segments" >&2
+    exit 1
+  fi
+
+  resolved_stage="$(cd "$STAGE_DIR" && pwd -P)"
+  resolved_view="$(cd "$STAGE_DIR" && realpath -m "$VIEW_FILE" 2>/dev/null)" || resolved_view=""
+  if [[ -z "$resolved_view" || "$resolved_view" != "$resolved_stage/"* || ! -f "$STAGE_DIR/$VIEW_FILE" ]]; then
+    echo "error: view file '$VIEW_FILE' not found in staged payload" >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "$MAIN_FILE" ]]; then
+  echo "Adding variant $VARIANT to $LGX_FILE (main: $MAIN_FILE)..."
+  lgx add "$LGX_FILE" \
+    --variant "$VARIANT" \
+    --files "$STAGE_DIR/." \
+    --main "$MAIN_FILE" \
+    -y
+else
+  echo "Adding variant $VARIANT to $LGX_FILE (no backend main entry)..."
+  lgx add "$LGX_FILE" \
+    --variant "$VARIANT" \
+    --files "$STAGE_DIR/." \
+    -y
+fi
 
 rm -rf "$STAGE_DIR"
 
@@ -228,12 +265,29 @@ if [[ "${DUAL_VARIANT:-}" == "1" && -n "${DEV_SRC_DRV:-}" && -n "${DEV_VARIANT:-
     cp "$ICON_STAGE_FILE" "$DEV_STAGE_DIR/$ICON_BASENAME"
   fi
 
-  echo "Adding dev variant $DEV_VARIANT to $LGX_FILE (main: $MAIN_FILE)..."
-  lgx add "$LGX_FILE" \
-    --variant "$DEV_VARIANT" \
-    --files "$DEV_STAGE_DIR/." \
-    --main "$MAIN_FILE" \
-    -y
+  if [[ "$PKG_TYPE" == "ui_qml" ]]; then
+    resolved_dev_stage="$(cd "$DEV_STAGE_DIR" && pwd -P)"
+    resolved_dev_view="$(cd "$DEV_STAGE_DIR" && realpath -m "$VIEW_FILE" 2>/dev/null)" || resolved_dev_view=""
+    if [[ -z "$resolved_dev_view" || "$resolved_dev_view" != "$resolved_dev_stage/"* || ! -f "$DEV_STAGE_DIR/$VIEW_FILE" ]]; then
+      echo "error: view file '$VIEW_FILE' not found in staged dev payload" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ -n "$MAIN_FILE" ]]; then
+    echo "Adding dev variant $DEV_VARIANT to $LGX_FILE (main: $MAIN_FILE)..."
+    lgx add "$LGX_FILE" \
+      --variant "$DEV_VARIANT" \
+      --files "$DEV_STAGE_DIR/." \
+      --main "$MAIN_FILE" \
+      -y
+  else
+    echo "Adding dev variant $DEV_VARIANT to $LGX_FILE (no backend main entry)..."
+    lgx add "$LGX_FILE" \
+      --variant "$DEV_VARIANT" \
+      --files "$DEV_STAGE_DIR/." \
+      -y
+  fi
 
   rm -rf "$DEV_STAGE_DIR"
 fi
