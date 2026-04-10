@@ -47,7 +47,14 @@ All bundlers produce a single `.lgx` file placed in `$out/`. When invoked via `n
 
 ## Metadata
 
-If the derivation's output contains a `metadata.json` at its root, the fields `name`, `version`, `description`, `author`, `type`, `category`, and `dependencies` are patched into the `.lgx` manifest automatically.
+The bundler reads `metadata.json` from the derivation's **source tree** (`drv.src`) at Nix eval time — not from the build output. If `metadata.json` is found, the fields `name`, `version`, `description`, `author`, `type`, `category`, `dependencies`, and `view` are patched into the `.lgx` manifest automatically. If not found, the bundler falls back to an empty `{}`.
+
+`metadata.json` is not required in the derivation output (`$out/`) for `core` or `ui` modules.
+
+For `type == "ui_qml"`:
+- `view` is required and points to the QML entry file bundled inside each variant
+- `main` is optional and, when present, is treated as the backend plugin base name
+- QML-only packages are emitted without synthesizing `main = view`
 
 ## Expected derivation layout
 
