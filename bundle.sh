@@ -89,7 +89,7 @@ patched = []
 for member, data in members:
     if member.name == 'manifest.json':
         manifest = json.loads(data)
-        for key in ('name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'view'):
+        for key in ('name', 'display_name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'view'):
             if metadata.get(key):
                 manifest[key] = metadata[key]
         # Set icon to the bundled filename (or keep the raw value if file was not found)
