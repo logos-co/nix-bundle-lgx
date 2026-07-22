@@ -103,6 +103,27 @@
               installPhase = ''
                 mkdir -p $out
                 cp *.lgx $out/
+
+                # An .lgx is a gzipped tar, so Nix's reference scanner cannot
+                # see the /nix/store paths embedded in the binaries inside it:
+                # the .lgx derivation ends up with an EMPTY closure. That is
+                # harmless when the .lgx is built locally (the payload's own
+                # closure is already realised on the way), but fatal when it is
+                # substituted from a binary cache onto a machine that has never
+                # built it — every store path the payload dlopen()s is missing,
+                # and the module crashes on load with "Library not loaded".
+                #
+                # Record the payload derivations in a plain-text file so the
+                # scanner sees them and Nix registers them as runtime
+                # references. Substituting the .lgx then also brings its
+                # payload closure, which is what the -dev variant's
+                # "dynamic libraries resolve from /nix/store at runtime"
+                # contract actually requires.
+                mkdir -p $out/nix-support
+                {
+                  echo "$SRC_DRV"
+                  ${nixpkgs.lib.optionalString (mode == "dual") ''echo "$DEV_SRC_DRV"''}
+                } > $out/nix-support/lgx-payload-closure
               '';
             } // (if mode == "dual" then {
               # For dual mode, also pass the raw (dev) derivation so bundle.sh
