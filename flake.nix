@@ -113,17 +113,24 @@
                 # built it — every store path the payload dlopen()s is missing,
                 # and the module crashes on load with "Library not loaded".
                 #
-                # Record the payload derivations in a plain-text file so the
-                # scanner sees them and Nix registers them as runtime
-                # references. Substituting the .lgx then also brings its
-                # payload closure, which is what the -dev variant's
-                # "dynamic libraries resolve from /nix/store at runtime"
-                # contract actually requires.
-                mkdir -p $out/nix-support
-                {
-                  echo "$SRC_DRV"
-                  ${nixpkgs.lib.optionalString (mode == "dual") ''echo "$DEV_SRC_DRV"''}
-                } > $out/nix-support/lgx-payload-closure
+                # Record the payload derivation in a plain-text file so the
+                # scanner sees it and Nix registers it as a runtime reference.
+                # Substituting the .lgx then also brings its payload closure,
+                # which is what the -dev variant's "dynamic libraries resolve
+                # from /nix/store at runtime" contract actually requires.
+                #
+                # Only for the dev payload. A portable variant has been through
+                # nix-bundle-dir: its libraries are copied in and its install
+                # names rewritten off the store (on darwin, e.g.
+                # /nix/store/…-libcxx-16.0.6/lib/libc++.1.0.dylib becomes
+                # /usr/lib/libc++.1.dylib), so it resolves nothing from
+                # /nix/store and needs no closure. Recording one there would
+                # only make it drag a closure it never reads.
+                ${nixpkgs.lib.optionalString (mode != "portable") ''
+                  mkdir -p $out/nix-support
+                  echo "${if mode == "dual" then "$DEV_SRC_DRV" else "$SRC_DRV"}" \
+                    > $out/nix-support/lgx-payload-closure
+                ''}
               '';
             } // (if mode == "dual" then {
               # For dual mode, also pass the raw (dev) derivation so bundle.sh
