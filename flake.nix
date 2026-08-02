@@ -23,7 +23,7 @@
         let
           variantName =
             if pkgs.stdenv.isDarwin then
-              (if pkgs.stdenv.isAarch64 then "darwin-arm64" else "darwin-amd64")
+              (if pkgs.stdenv.isAarch64 then "darwin-arm64" else "darwin-x86_64")
             else
               (if pkgs.stdenv.isAarch64 then "linux-arm64" else "linux-amd64");
 
