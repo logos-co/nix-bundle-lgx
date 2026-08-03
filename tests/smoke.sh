@@ -215,24 +215,33 @@ echo "== runs on distros that are not the build host =="
 # RPATH earns its keep: for a bare dlopen the loader consults DT_RPATH BEFORE
 # LD_LIBRARY_PATH but LD_LIBRARY_PATH before DT_RUNPATH. A payload linked with
 # RUNPATH silently loads the stranger's library and answers 7.
+# Match on a line, not on the whole capture: the first `docker run` of an
+# image that is not yet local pulls it, and that progress lands on the same
+# combined stream. Exact equality then fails even though the probe printed
+# the right answer — which is exactly how this failed in CI (images cached
+# on the server where it was developed, cold on the runner). Same shape as
+# nix-bundle-appimage's run_in.
+probe_ok() {  # probe_ok <label> <docker-run args...>
+  local label="$1" out rc; shift
+  out="$(docker run "$@" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qx 'smokelgx ok 42'; then
+    ok "$label"
+  else
+    bad "$label" "exit $rc: $(printf '%s\n' "$out" | tail -3 | tr '\n' ' ')"
+  fi
+}
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   ABS="$(cd "$P" && pwd)"
   DECOY="$(readlink -f out-subject)/decoy"
   for img in ubuntu:latest fedora:latest; do
-    out="$(docker run --rm -v "$ABS:/p:ro" "$img" /p/smokelgx_probe 2>&1)"
-    if [ "$out" = "smokelgx ok 42" ]; then
-      ok "$img: probe ran and dlopened the module"
-    else
-      bad "$img: probe ran and dlopened the module" "${out:-<no output>}"
-    fi
-    out="$(docker run --rm -v "$ABS:/p:ro" -v "$DECOY:/decoy:ro" -e LD_LIBRARY_PATH=/decoy \
-             "$img" /p/smokelgx_probe 2>&1)"
-    if [ "$out" = "smokelgx ok 42" ]; then
-      ok "$img: kept its own module with a decoy on LD_LIBRARY_PATH"
-    else
-      bad "$img: kept its own module with a decoy on LD_LIBRARY_PATH" \
-          "${out:-<no output>} (7 = the decoy won, i.e. DT_RUNPATH not DT_RPATH)"
-    fi
+    probe_ok "$img: probe ran and dlopened the module" \
+      --rm -v "$ABS:/p:ro" "$img" /p/smokelgx_probe
+    # Second run: decoy of the same soname on LD_LIBRARY_PATH. With DT_RPATH
+    # the payload keeps its own module; with DT_RUNPATH the decoy wins and
+    # the probe prints 7 instead of 42.
+    probe_ok "$img: kept its own module with a decoy on LD_LIBRARY_PATH" \
+      --rm -v "$ABS:/p:ro" -v "$DECOY:/decoy:ro" -e LD_LIBRARY_PATH=/decoy \
+      "$img" /p/smokelgx_probe
   done
 else
   echo "  -- docker unavailable, skipping the cross-distro run"
