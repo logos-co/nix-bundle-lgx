@@ -20,12 +20,14 @@
 #   lib/smokelgx_probe     an executable that dlopen()s the module beside it
 #   bin/smokelgx_probe     same binary; bin/ has to hold an ELF or the shim
 #                          assertion below asserts nothing (see there)
-#   decoy/libsmokelgx.so   same soname, wrong answer; never packaged
+#   decoy/libsmokelgx.so   same filename, wrong answer; never packaged
 #
 # The probe lives in lib/ because lib/ IS the .lgx payload: bundle.sh ships
 # $SRC_DRV/lib plus extraDirs, and no consumer sets extraDirs to bin.  Its
-# dlopen of a bare soname is what the whole layout rests on -- flattened into
+# dlopen("libsmokelgx.so") is what the whole layout rests on -- flattened into
 # the payload root, the module is found only through the probe's own RPATH.
+# (We say "filename", not SONAME: nothing here sets DT_SONAME; the decoy wins
+# or loses solely because it shares the name the probe asks dlopen for.)
 #
 # Every assertion in the two sections that matter -- payload contract, and the
 # cross-distro run -- was checked against the previous nix-bundle-dir pin
@@ -85,8 +87,9 @@ cat > subject/module.c <<'C'
 int smokelgx_answer(void) { return 42; }
 C
 
-# Same soname, wrong answer. Never enters the package; it is mounted on
-# LD_LIBRARY_PATH in the container to prove the payload ignores it.
+# Same filename as the real module, wrong answer. Never enters the package;
+# it is mounted on LD_LIBRARY_PATH in the container to prove the payload
+# ignores it. (Filename, not DT_SONAME -- see the header comment.)
 cat > subject/decoy.c <<'C'
 int smokelgx_answer(void) { return 7; }
 C
@@ -95,9 +98,9 @@ cat > subject/probe.c <<'C'
 #include <dlfcn.h>
 #include <stdio.h>
 
-/* Loads the module by bare soname, exactly as a host app does. The payload is
-   flat -- module and probe sit in the same directory -- so this resolves only
-   through the probe's own DT_RPATH. */
+/* Loads the module by bare filename, exactly as a host app does. The payload
+   is flat -- module and probe sit in the same directory -- so this resolves
+   only through the probe's own DT_RPATH. */
 int main(void) {
     void *h = dlopen("libsmokelgx.so", RTLD_NOW);
     if (!h) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 1; }
@@ -177,8 +180,11 @@ echo "== the package (preconditions, not bump-sensitive) =="
 ok "lgx verify"
 "$LGX" extract "$PKG" -v "$VARIANT" -o payload >/dev/null || die "lgx extract -v $VARIANT failed"
 # lgx may unpack into payload/ or payload/<variant>/; find the module either way.
-P="$(dirname "$(find payload -name libsmokelgx.so -print -quit)")"
-[ -n "$P" ] && [ -d "$P" ] || die "extracted payload has no libsmokelgx.so: $(find payload -type f | head)"
+# Capture the find result first: `dirname ""` is `.`, which is a real directory,
+# so nesting dirname(find) and then testing `-d` would green a missing module.
+MOD="$(find payload -name libsmokelgx.so -print -quit)"
+[ -n "$MOD" ] && [ -f "$MOD" ] || die "extracted payload has no libsmokelgx.so: $(find payload -type f | head)"
+P="$(dirname "$MOD")"
 ok "the payload carries the module named by metadata.json"
 PROBE="$P/smokelgx_probe"
 check "the payload carries the probe next to the module" "[ -f '$PROBE' ]"
@@ -211,7 +217,7 @@ echo "== runs on distros that are not the build host =="
 # `nix build` -- the build host has /nix/store, so everything works there.
 #
 # Each image runs the probe twice. The second run puts a DECOY libsmokelgx.so
-# (same soname, answers 7) on LD_LIBRARY_PATH, which is how the payload's
+# (same filename, answers 7) on LD_LIBRARY_PATH, which is how the payload's
 # RPATH earns its keep: for a bare dlopen the loader consults DT_RPATH BEFORE
 # LD_LIBRARY_PATH but LD_LIBRARY_PATH before DT_RUNPATH. A payload linked with
 # RUNPATH silently loads the stranger's library and answers 7.
@@ -230,19 +236,27 @@ probe_ok() {  # probe_ok <label> <docker-run args...>
     bad "$label" "exit $rc: $(printf '%s\n' "$out" | tail -3 | tr '\n' ' ')"
   fi
 }
+# SMOKE_DISTROS lets CI pin tags/digests (latest moves). Defaults stay
+# convenient for local runs.
+: "${SMOKE_DISTROS:=ubuntu:latest fedora:latest}"
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   ABS="$(cd "$P" && pwd)"
   DECOY="$(readlink -f out-subject)/decoy"
-  for img in ubuntu:latest fedora:latest; do
+  for img in $SMOKE_DISTROS; do
     probe_ok "$img: probe ran and dlopened the module" \
       --rm -v "$ABS:/p:ro" "$img" /p/smokelgx_probe
-    # Second run: decoy of the same soname on LD_LIBRARY_PATH. With DT_RPATH
+    # Second run: decoy of the same filename on LD_LIBRARY_PATH. With DT_RPATH
     # the payload keeps its own module; with DT_RUNPATH the decoy wins and
     # the probe prints 7 instead of 42.
     probe_ok "$img: kept its own module with a decoy on LD_LIBRARY_PATH" \
       --rm -v "$ABS:/p:ro" -v "$DECOY:/decoy:ro" -e LD_LIBRARY_PATH=/decoy \
       "$img" /p/smokelgx_probe
   done
+elif [ -n "${GITHUB_ACTIONS:-}" ]; then
+  # Cross-distro exec is the primary signal this CI exists for. Skipping it
+  # on a runner that lost Docker would green the layout checks and miss the
+  # exact failure mode the job is meant to catch.
+  die "docker is required under GitHub Actions (cross-distro run is the point)"
 else
   echo "  -- docker unavailable, skipping the cross-distro run"
   echo "     (the payload assertions above still ran; portability did not)"

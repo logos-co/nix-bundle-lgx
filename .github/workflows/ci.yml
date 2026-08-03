@@ -45,6 +45,10 @@ jobs:
         continue-on-error: true   # a fork without the secret still gets to run
 
       - name: Payload contract + cross-distro run
+        env:
+          # Pin tags so a moving :latest cannot invent unrelated failures.
+          # Override locally with SMOKE_DISTROS if you want something else.
+          SMOKE_DISTROS: ubuntu:24.04 fedora:42
         run: |
           nix shell nixpkgs#patchelf nixpkgs#binutils \
             -c bash tests/smoke.sh .
