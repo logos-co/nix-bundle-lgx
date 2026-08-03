@@ -29,6 +29,14 @@
 
           devVariantName = variantName + "-dev";
 
+          # nix-bundle-dir's `guiApp` is deliberately not plumbed through.
+          # It decides one thing only: whether bin/ entries are replaced by a
+          # launcher that exports XKB_CONFIG_ROOT / QT_QPA_PLATFORMTHEME. An
+          # .lgx payload is $SRC_DRV/lib plus extraDirs, so bin/ never enters
+          # the package and the flag has no observable effect on our output.
+          # It would be a knob callers could set and never see. Revisit only if
+          # a consumer starts putting "bin" in extraDirs, in which case the
+          # default (true) is already the safe direction.
           mkBundleDirForDrv = drv: mkBundleDir {
             inherit drv;
             name = drv.pname or drv.name or "bundle";

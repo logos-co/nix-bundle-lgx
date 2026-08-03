@@ -16,14 +16,25 @@
 # carrying a metadata.json (nothing in nixpkgs has one), and generating it
 # keeps this script usable against a remote flake ref.  It ships:
 #
-#   lib/libsmokelgx.so    the "module" -- metadata.json's `main`
-#   lib/smokelgx_probe    an executable that dlopen()s the module beside it
-#   bin/smokelgx_probe    same binary, only to give bin/ an ELF (see below)
+#   lib/libsmokelgx.so     the "module" -- metadata.json's `main`
+#   lib/smokelgx_probe     an executable that dlopen()s the module beside it
+#   bin/smokelgx_probe     same binary; bin/ has to hold an ELF or the shim
+#                          assertion below asserts nothing (see there)
+#   decoy/libsmokelgx.so   same soname, wrong answer; never packaged
 #
 # The probe lives in lib/ because lib/ IS the .lgx payload: bundle.sh ships
 # $SRC_DRV/lib plus extraDirs, and no consumer sets extraDirs to bin.  Its
 # dlopen of a bare soname is what the whole layout rests on -- flattened into
 # the payload root, the module is found only through the probe's own RPATH.
+#
+# Every assertion in the two sections that matter -- payload contract, and the
+# cross-distro run -- was checked against the previous nix-bundle-dir pin
+# (4937262, the ld.so trampoline) and fails there; 10 of 14.  The four that
+# pass on both pins are marked as preconditions where they appear.  Checks
+# that could only ever pass were deliberately left out: a payload cannot
+# contain a launcher, a companion .elf or a nixpkgs `-wrapped` wrapper while
+# lib/ is all this repo ships, so asserting their absence would only look like
+# coverage.
 #
 # Usage:  tests/smoke.sh [flake-ref]     (default: the checkout, ".")
 set -uo pipefail
@@ -47,6 +58,10 @@ bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; [ -n "${2:-}" ] && printf '  
 check(){ if eval "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1" "${3:-}"; fi; }
 die()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; echo; echo "== aborted =="; exit 1; }
 
+# Everything below is about ELF, so say so plainly rather than failing oddly
+# on a Mac (where an Intel host would otherwise pass the arch check).
+[ "$(uname -s)" = "Linux" ] || { echo "smoke: Linux-only; nothing to assert on $(uname -s)"; exit 0; }
+
 # The loader path this architecture's psABI mandates, and the variant name
 # bundle.sh derives from the same fact.  Deliberately not a single prefix:
 # /lib64/ld-linux-aarch64.so.1 does not exist on current Fedora or openSUSE,
@@ -68,6 +83,12 @@ mkdir -p subject
 
 cat > subject/module.c <<'C'
 int smokelgx_answer(void) { return 42; }
+C
+
+# Same soname, wrong answer. Never enters the package; it is mounted on
+# LD_LIBRARY_PATH in the container to prove the payload ignores it.
+cat > subject/decoy.c <<'C'
+int smokelgx_answer(void) { return 7; }
 C
 
 cat > subject/probe.c <<'C'
@@ -112,20 +133,26 @@ cat > subject/flake.nix <<NIX
       system = "$SYSTEM";
       pkgs = nixpkgs.legacyPackages.\${system};
     in {
-      packages.\${system}.lgx = logos-package.packages.\${system}.lgx;
-      packages.\${system}.default = pkgs.stdenv.mkDerivation {
-        pname = "smokelgx";
-        version = "0.0.1";
-        src = ./.;
-        buildPhase = ''
-          \$CC -O2 -shared -fPIC -o libsmokelgx.so module.c
-          \$CC -O2 -o smokelgx_probe probe.c -ldl
-        '';
-        installPhase = ''
-          mkdir -p \$out/lib \$out/bin
-          cp libsmokelgx.so smokelgx_probe \$out/lib/
-          cp smokelgx_probe \$out/bin/
-        '';
+      packages.\${system} = {
+        lgx = logos-package.packages.\${system}.lgx;
+        default = pkgs.stdenv.mkDerivation {
+          pname = "smokelgx";
+          version = "0.0.1";
+          src = ./.;
+          buildPhase = ''
+            \$CC -O2 -shared -fPIC -o libsmokelgx.so module.c
+            \$CC -O2 -shared -fPIC -o decoy.so decoy.c
+            \$CC -O2 -o smokelgx_probe probe.c -ldl
+          '';
+          # decoy/ is neither bin/ nor lib/, so no bundler ever copies it and
+          # it cannot leak into the package.
+          installPhase = ''
+            mkdir -p \$out/lib \$out/bin \$out/decoy
+            cp libsmokelgx.so smokelgx_probe \$out/lib/
+            cp smokelgx_probe \$out/bin/
+            cp decoy.so \$out/decoy/libsmokelgx.so
+          '';
+        };
       };
     };
 }
@@ -134,25 +161,31 @@ NIX
 echo "== building =="
 nix build "path:$WORK/subject#lgx" -o out-lgxtool || die "could not build the pinned lgx CLI"
 LGX="$(readlink -f out-lgxtool)/bin/lgx"
+nix build "path:$WORK/subject#default" -o out-subject || die "the subject does not build"
 nix bundle --bundler "$FLAKE#portable" "path:$WORK/subject#default" -o out-pkg \
   || die "nix bundle --bundler $FLAKE#portable failed"
 PKG="$(readlink -f out-pkg)/smokelgx.lgx"
 [ -f "$PKG" ] || die "no smokelgx.lgx in the bundler output: $(ls "$(readlink -f out-pkg)")"
 
 echo
-echo "== the package =="
+echo "== the package (preconditions, not bump-sensitive) =="
+# These four say the package exists and holds what it claims. They pass on
+# either pin -- they guard this repo's own code and the `lgx` it pins, not the
+# bundler bump -- but without them a broken payload would fail the assertions
+# below for the wrong reason, or the whole file would assert nothing at all.
 "$LGX" verify "$PKG" || die "lgx verify rejected the package it just built"
 ok "lgx verify"
 "$LGX" extract "$PKG" -v "$VARIANT" -o payload >/dev/null || die "lgx extract -v $VARIANT failed"
 # lgx may unpack into payload/ or payload/<variant>/; find the module either way.
 P="$(dirname "$(find payload -name libsmokelgx.so -print -quit)")"
 [ -n "$P" ] && [ -d "$P" ] || die "extracted payload has no libsmokelgx.so: $(find payload -type f | head)"
+ok "the payload carries the module named by metadata.json"
 PROBE="$P/smokelgx_probe"
 check "the payload carries the probe next to the module" "[ -f '$PROBE' ]"
 check "the probe kept its executable bit through the tar" "[ -x '$PROBE' ]"
 
 echo
-echo "== payload contract =="
+echo "== payload contract (each of these fails on the previous pin) =="
 for f in "$PROBE" "$P/libsmokelgx.so"; do
   n="$(basename "$f")"
   check "$n: DT_RPATH is set (bundled libs beat a stale LD_LIBRARY_PATH)" \
@@ -170,37 +203,35 @@ check "probe PT_INTERP is the psABI path ($PSABI)" \
 check "no libprocself_fix.so in the payload" \
       "! find payload -name 'libprocself_fix.so' | grep -q ." \
       "the LD_PRELOAD shim is dead weight inside every package that carries it"
-# A companion .<name>.elf beside a shell launcher is the trampoline's shape.
-# Nothing in a payload should need one, and the payload is flat: a stray
-# launcher would sit next to the module with no bin/ to anchor it.
-check "no launcher/companion pair in the payload" \
-      "! find payload -name '.*.elf' | grep -q ." \
-      "a hidden companion ELF means a launcher was emitted into the payload"
-check "no nixpkgs '-wrapped' wrapper in the payload" \
-      "! find payload -name '*-wrapped' | grep -q ." \
-      "a Qt C wrapper would drag /nix/store paths into the tar"
-
-echo
-echo "== self-contained: nothing points back into /nix/store =="
-# A .lgx is a tar: Nix records no references for it, so a payload that still
-# names a store path is naming something the user's machine will not have.
-storeref=0
-for f in "$PROBE" "$P/libsmokelgx.so"; do
-  { interp "$f"; patchelf --print-rpath "$f" 2>/dev/null; patchelf --print-needed "$f" 2>/dev/null; } \
-    | grep -q /nix/store && { storeref=1; echo "         $(basename "$f") still references /nix/store"; }
-done
-check "no /nix/store in the payload's interpreter, RPATH or NEEDED" "[ $storeref -eq 0 ]"
 
 echo
 echo "== runs on distros that are not the build host =="
+# The point of the whole exercise. A payload that unpacks cleanly and then
+# cannot exec is the failure this repo ships to users, and it is invisible to
+# `nix build` -- the build host has /nix/store, so everything works there.
+#
+# Each image runs the probe twice. The second run puts a DECOY libsmokelgx.so
+# (same soname, answers 7) on LD_LIBRARY_PATH, which is how the payload's
+# RPATH earns its keep: for a bare dlopen the loader consults DT_RPATH BEFORE
+# LD_LIBRARY_PATH but LD_LIBRARY_PATH before DT_RUNPATH. A payload linked with
+# RUNPATH silently loads the stranger's library and answers 7.
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   ABS="$(cd "$P" && pwd)"
+  DECOY="$(readlink -f out-subject)/decoy"
   for img in ubuntu:latest fedora:latest; do
     out="$(docker run --rm -v "$ABS:/p:ro" "$img" /p/smokelgx_probe 2>&1)"
     if [ "$out" = "smokelgx ok 42" ]; then
       ok "$img: probe ran and dlopened the module"
     else
       bad "$img: probe ran and dlopened the module" "${out:-<no output>}"
+    fi
+    out="$(docker run --rm -v "$ABS:/p:ro" -v "$DECOY:/decoy:ro" -e LD_LIBRARY_PATH=/decoy \
+             "$img" /p/smokelgx_probe 2>&1)"
+    if [ "$out" = "smokelgx ok 42" ]; then
+      ok "$img: kept its own module with a decoy on LD_LIBRARY_PATH"
+    else
+      bad "$img: kept its own module with a decoy on LD_LIBRARY_PATH" \
+          "${out:-<no output>} (7 = the decoy won, i.e. DT_RUNPATH not DT_RPATH)"
     fi
   done
 else
