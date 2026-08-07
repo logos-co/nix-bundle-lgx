@@ -158,8 +158,16 @@ fi
 
 # Resolve symlinks into real copies so lgx (which may not preserve symlinks)
 # includes the short-name version aliases (e.g. libicuuc.76.dylib -> libicuuc.76.1.dylib).
+#
+# -L is load-bearing: dereference WHILE STILL IN THE STORE DIRECTORY. `cp -a`
+# implies -d (no-dereference), and nixpkgs' win-dll-link.sh stages a plugin's
+# DLL closure as RELATIVE symlinks (../../<store-path>/bin/Qt6Core.dll). Copied
+# as symlinks into a mktemp dir those relative targets no longer resolve, and
+# the repair loop below then deleted every one of them as "broken" -- silently
+# shipping a Windows module without the 15 DLLs that had just been staged for
+# it. Dereferencing here makes that loop a no-op instead of a demolition crew.
 STAGE_DIR="$(mktemp -d)"
-cp -a "$LIB_DIR/." "$STAGE_DIR/"
+cp -aL "$LIB_DIR/." "$STAGE_DIR/"
 chmod -R u+w "$STAGE_DIR" 2>/dev/null || true
 find "$STAGE_DIR" -type l | while IFS= read -r link; do
   target="$(readlink -f "$link" 2>/dev/null)" || true
@@ -167,10 +175,26 @@ find "$STAGE_DIR" -type l | while IFS= read -r link; do
     rm "$link"
     cp "$target" "$link"
   else
-    echo "  Warning: removing broken symlink $(basename "$link")"
-    rm "$link"
+    echo "error: dangling symlink in payload: $(basename "$link") -> $(readlink "$link")" >&2
+    echo "       The copy above dereferences, so reaching here means the link was" >&2
+    echo "       already broken in $LIB_DIR. Shipping the package without it would" >&2
+    echo "       produce a module that fails to load with no indication why." >&2
+    exit 1
   fi
 done
+
+# Assert the payload matches the source. The failure this catches shipped a
+# module missing 15 of its 18 files and still exited 0 -- the packaging step
+# "succeeded" and produced something that could not load. A count check is cheap
+# and turns that class of silent loss into a build failure.
+_src_n="$(find "$LIB_DIR/." -maxdepth 1 -mindepth 1 | wc -l | tr -d ' ')"
+_stage_n="$(find "$STAGE_DIR/." -maxdepth 1 -mindepth 1 | wc -l | tr -d ' ')"
+if [[ "$_src_n" != "$_stage_n" ]]; then
+  echo "error: payload staging lost entries: $LIB_DIR has $_src_n, staged $_stage_n" >&2
+  echo "       Anything dropped here is missing from the package at runtime." >&2
+  exit 1
+fi
+echo "Staged $_stage_n entries from $LIB_DIR"
 
 # Copy extra directories into the staging directory so they ship alongside lib contents.
 if [[ -n "${EXTRA_DIRS:-}" ]]; then
@@ -178,7 +202,7 @@ if [[ -n "${EXTRA_DIRS:-}" ]]; then
     [[ -z "$dir" ]] && continue
     if [[ -d "$SRC_DRV/$dir" ]]; then
       mkdir -p "$STAGE_DIR/$dir"
-      cp -a "$SRC_DRV/$dir/." "$STAGE_DIR/$dir/"
+      cp -aL "$SRC_DRV/$dir/." "$STAGE_DIR/$dir/"
       chmod -R u+w "$STAGE_DIR/$dir" 2>/dev/null || true
       echo "Bundled extra directory: $dir"
     else
@@ -233,7 +257,7 @@ if [[ "${DUAL_VARIANT:-}" == "1" && -n "${DEV_SRC_DRV:-}" && -n "${DEV_VARIANT:-
   fi
 
   DEV_STAGE_DIR="$(mktemp -d)"
-  cp -a "$DEV_LIB_DIR/." "$DEV_STAGE_DIR/"
+  cp -aL "$DEV_LIB_DIR/." "$DEV_STAGE_DIR/"
   chmod -R u+w "$DEV_STAGE_DIR" 2>/dev/null || true
 
   # Resolve symlinks in dev staging directory
@@ -254,7 +278,7 @@ if [[ "${DUAL_VARIANT:-}" == "1" && -n "${DEV_SRC_DRV:-}" && -n "${DEV_VARIANT:-
       [[ -z "$dir" ]] && continue
       if [[ -d "$DEV_SRC_DRV/$dir" ]]; then
         mkdir -p "$DEV_STAGE_DIR/$dir"
-        cp -a "$DEV_SRC_DRV/$dir/." "$DEV_STAGE_DIR/$dir/"
+        cp -aL "$DEV_SRC_DRV/$dir/." "$DEV_STAGE_DIR/$dir/"
         chmod -R u+w "$DEV_STAGE_DIR/$dir" 2>/dev/null || true
       fi
     done <<< "$EXTRA_DIRS"
