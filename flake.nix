@@ -18,7 +18,22 @@
       buildSystemFor = target:
         if target == "x86_64-windows" then "x86_64-linux" else target;
 
-      forAllSystems = f: logos-nix.lib.forAllTargets ({ system, pkgs }:
+      # `forAllTargets` (which adds the x86_64-windows pseudo-system) exists
+      # only on logos-nix's cross-overlay branch. flake.nix declares the plain
+      # `github:logos-co/logos-nix`, exactly like every other feat/windows-cross
+      # repo -- the overlay is supplied by the WORKSPACE via follows, not pinned
+      # here. So a bare `nix eval .#bundlers` on this branch resolved the
+      # DEFAULT-branch logos-nix, which has no forAllTargets, and died with
+      # "attribute 'forAllTargets' missing" before reaching anything real.
+      #
+      # That is not hypothetical: master's CI runs `tests/smoke.sh .` on a bare
+      # checkout with no override, so the gate could never have gone green on
+      # this branch. Degrade to forAllSystems instead of assuming the
+      # capability -- same `f { system, pkgs }` contract, minus the Windows
+      # target, which is the honest answer when the pinned logos-nix cannot
+      # build it.
+      forAllTargetsFn = logos-nix.lib.forAllTargets or logos-nix.lib.forAllSystems;
+      forAllSystems = f: forAllTargetsFn ({ system, pkgs }:
         let buildSystem = buildSystemFor system; in f {
           inherit system pkgs;
           lgx = logos-package.packages.${buildSystem}.lgx;
