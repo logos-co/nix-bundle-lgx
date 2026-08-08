@@ -64,8 +64,7 @@
           # ELF/Mach-O only (`file -b` -> Mach-O | ELF, no PE branch), so
           # calling it here would silently produce a payload with nothing
           # collected.
-          # DLLs the Logos host already ships in its own bin/ (verified against
-          # logos_host_qt.exe's staged set). Windows binds an import to a module
+          # DLLs the Logos host already ships in its own bin/. Windows binds an import to a module
           # already loaded under that base name BEFORE searching any directory,
           # so a duplicate here would be inert rather than dangerous -- but
           # linkDLLsInfolder stages the FULL closure, and for capability_module
@@ -74,16 +73,48 @@
           # the Windows spelling of the hostLibs list below, which exists for
           # exactly this reason. Note the Unix globs do NOT transfer: "libz*"
           # never matches "zlib1.dll".
+          #
+          # EVERY ENTRY HERE IS A PROMISE ABOUT ANOTHER REPO'S OUTPUT, and a
+          # broken promise is silent: the module simply fails to load with
+          # ERROR_MOD_NOT_FOUND (126) and Qt reports only "The specified module
+          # could not be found", naming the PLUGIN rather than the missing
+          # dependency. Four entries were wrong and one of them shipped:
+          #
+          #   libiconv-2.dll   libcharset-1.dll   libintl-8.dll   icui18n76.dll
+          #
+          # none of which the host bin/ contains -- checked against a real
+          # portable Basecamp Windows bundle, and against logos_host_qt.exe's
+          # own staged set, which the comment above once claimed as its
+          # authority. libiconv-2.dll is reached as
+          # package_downloader_plugin -> libpackage_downloader_lib -> libcurl-4
+          # -> libidn2-0 -> libiconv-2, so it was staged correctly by
+          # linkDLLsInfolder and then DELETED here.
+          #
+          # So: only strip something that is both LARGE and CERTAIN. When in
+          # doubt, ship the duplicate -- Windows binds an import to a module
+          # already loaded under that base name before searching any directory,
+          # which makes a redundant copy inert, while a missing one is fatal and
+          # silent. That asymmetry is the whole design rule for this list.
           windowsHostLibs = [
+            # Certain: LogosBasecamp.exe / logos_host.exe import these directly,
+            # so the host cannot start without them.
             "Qt*.dll"
             "libcrypto-*.dll" "libssl-*.dll"
             "libstdc++-*.dll" "libgcc_s_*.dll" "libmcfgthread-*.dll"
             "libpcre2-*.dll" "libb2-*.dll" "libdouble-conversion.dll"
             "libzstd.dll" "zlib1.dll"
             "libfmt.dll" "libspdlog.dll"
-            "libiconv-*.dll" "libcharset-*.dll" "libintl-*.dll"
-            "libicuuc*.dll" "libicui18n*.dll" "libicudata*.dll"
             "liblogos_core*.dll" "liblogos_sdk*.dll" "liblgx*.dll"
+            # NOT stripped, deliberately:
+            #   libiconv / libcharset / libintl -- absent from the host bin/.
+            #   ICU -- the previous globs (libicuuc*, libicui18n*, libicudata*)
+            #     never matched the real filenames (icuuc76.dll, icui18n76.dll,
+            #     icudt76.dll: no `lib` prefix, and `icudt` not `icudata`), so
+            #     ICU has always shipped in payloads. Do not "fix" those globs
+            #     without splitting them: icuuc/icudt reach the host bin/ only
+            #     as a transitive copy out of liblogos' lib/, and icui18n never
+            #     does -- so a naive repair reintroduces exactly this bug.
+            #     Costs ~30 MB per package; that is the price of certainty.
           ];
 
           # Windows payload: the raw output minus host-provided DLLs. Copies the
