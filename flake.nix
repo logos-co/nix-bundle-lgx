@@ -219,8 +219,28 @@
                 case "''${_b,,}" in *.dll|*.exe) _roots+=("$_b") ;; esac
               done < <(find "$out" -type f 2>/dev/null)
 
+              # An empty root set is NOT "nothing to verify" -- it is the loudest
+              # possible symptom of the strip loop above having eaten the
+              # payload, and reporting success on it reproduces exactly the class
+              # of bug this whole block exists to catch. Demonstrated: adding an
+              # over-broad "*.dll" to windowsHostLibs logged
+              # `host-provided, dropping from payload: main_ui.dll`, left the
+              # payload with no PE at all, printed this line, and the derivation
+              # SUCCEEDED. Compare against the SOURCE: zero PEs in is a package
+              # that legitimately ships none (a QML-only ui_qml module, which is
+              # a real and supported shape); zero out after non-zero in is the
+              # strip list being wrong.
+              _src_pes=$(find -L ${drv} -type f \( -iname '*.dll' -o -iname '*.exe' \) 2>/dev/null | wc -l)
+              if [ ''${#_roots[@]} -eq 0 ] && [ "$_src_pes" -gt 0 ]; then
+                echo "ERROR: the source derivation has $_src_pes PE file(s) but the payload has none." >&2
+                echo "The windowsHostLibs strip loop removed every binary in this package." >&2
+                echo "Contents of the payload:" >&2
+                find "$out" -type f >&2 || true
+                exit 1
+              fi
+
               if [ ''${#_roots[@]} -eq 0 ]; then
-                echo "payload contains no PE file; nothing to verify"
+                echo "payload contains no PE file (source ships none either); nothing to verify"
               else
                 _queue=("''${_roots[@]}")
                 declare -A _from
