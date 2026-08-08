@@ -212,9 +212,31 @@ if [[ -n "${EXTRA_DIRS:-}" ]]; then
 fi
 
 # Copy the icon into the staging directory so it ships inside the variant.
+#
+# chmod u+w is NOT cosmetic. The icon is copied straight out of the Nix store,
+# where everything is 0444, and plain `cp` gives the destination the source's
+# mode -- so the icon was the ONE file in the payload that shipped read-only.
+# (Every other staging path above already does `chmod -R u+w`; these two copies
+# were the exception.) On Windows the extractor maps that to
+# FILE_ATTRIBUTE_READONLY, and Windows refuses to DELETE a read-only file --
+# where POSIX consults only the parent directory's write bit. The result:
+# `fs::remove_all` on the temp extraction directory threw an uncaught
+# filesystem_error after a successful install, so the install reply was never
+# sent and the package manager showed "Retry" for a package that had installed
+# perfectly; uninstall and upgrade failed the same way with "Access is denied".
 if [[ -n "$ICON_STAGE_FILE" && -f "$ICON_STAGE_FILE" ]]; then
   cp "$ICON_STAGE_FILE" "$STAGE_DIR/$ICON_BASENAME"
+  chmod u+w "$STAGE_DIR/$ICON_BASENAME"
   echo "Bundled icon: $ICON_BASENAME"
+fi
+
+# Nothing in a payload should ship read-only, for the reason above. Assert it
+# rather than trusting the chmods, because the failure is invisible on the
+# build host and only appears on Windows at uninstall time.
+if find "$STAGE_DIR" -type f ! -writable -print -quit | grep -q .; then
+  echo "ERROR: payload contains read-only file(s); they cannot be deleted on Windows:" >&2
+  find "$STAGE_DIR" -type f ! -writable >&2
+  exit 1
 fi
 
 if [[ "$PKG_TYPE" == "ui_qml" ]]; then
@@ -284,9 +306,17 @@ if [[ "${DUAL_VARIANT:-}" == "1" && -n "${DEV_SRC_DRV:-}" && -n "${DEV_VARIANT:-
     done <<< "$EXTRA_DIRS"
   fi
 
-  # Copy icon into dev staging directory
+  # Copy icon into dev staging directory. Same chmod + assertion as the
+  # portable path above -- see the comment there for why a read-only payload
+  # file breaks install, uninstall and upgrade on Windows.
   if [[ -n "$ICON_STAGE_FILE" && -f "$ICON_STAGE_FILE" ]]; then
     cp "$ICON_STAGE_FILE" "$DEV_STAGE_DIR/$ICON_BASENAME"
+    chmod u+w "$DEV_STAGE_DIR/$ICON_BASENAME"
+  fi
+  if find "$DEV_STAGE_DIR" -type f ! -writable -print -quit | grep -q .; then
+    echo "ERROR: dev payload contains read-only file(s); they cannot be deleted on Windows:" >&2
+    find "$DEV_STAGE_DIR" -type f ! -writable >&2
+    exit 1
   fi
 
   if [[ "$PKG_TYPE" == "ui_qml" ]]; then
