@@ -117,6 +117,31 @@
             #     Costs ~30 MB per package; that is the price of certainty.
           ];
 
+          # DLLs Windows itself provides. Matched case-insensitively with the
+          # extension stripped, because import tables mix spellings freely
+          # ("KERNEL32.dll" and "IPHLPAPI.DLL" both occur in this tree).
+          # `api-ms-win-*` / `ext-ms-*` are matched by prefix in the shell.
+          windowsSystemDlls = [
+            "kernel32" "kernelbase" "ntdll" "user32" "gdi32" "gdiplus" "advapi32"
+            "shell32" "shcore" "shlwapi" "ole32" "oleaut32" "oleacc" "comdlg32"
+            "comctl32" "ws2_32" "wsock32" "mswsock" "crypt32" "bcrypt" "ncrypt"
+            "secur32" "iphlpapi" "dbghelp" "version" "winmm" "imm32" "netapi32"
+            "userenv" "dwmapi" "uxtheme" "d2d1" "d3d9" "d3d11" "d3d12" "dxgi"
+            "dwrite" "opengl32" "glu32" "setupapi" "wtsapi32" "mpr" "rpcrt4"
+            "msvcrt" "normaliz" "winspool" "odbc32" "authz" "dnsapi" "wldap32"
+            "winhttp" "wininet" "psapi" "cfgmgr32" "uiautomationcore"
+            "windowscodecs" "avicap32" "msimg32" "powrprof" "propsys" "usp10"
+            "wintrust" "avrt"
+          ];
+
+          # A PE-capable objdump. NOT `pkgs.pkgsBuildBuild.binutils`: plain
+          # nixpkgs binutils is built without the PE targets and prints NOTHING
+          # for a valid mingw DLL, which is indistinguishable from "no imports"
+          # and turns this entire gate into a vacuous pass. Measured on
+          # libpackage_downloader_lib.dll: the cross objdump reports 13 imports,
+          # the native one reports 0.
+          peObjdump = "${pkgs.stdenv.cc.bintools.bintools}/bin/${pkgs.stdenv.cc.targetPrefix}objdump";
+
           # Windows payload: the raw output minus host-provided DLLs. Copies the
           # WHOLE tree, not just lib/, because bundle.sh reads extraDirs out of
           # SRC_DRV too. Uses pkgsBuildBuild so this file-shuffling runs on the
@@ -134,6 +159,127 @@
                     rm -f "$f"
                   done
                 done
+              fi
+
+              # ---------------------------------------------------------------
+              # Prove the payload is import-complete, to a FIXPOINT.
+              #
+              # Upstream staging is nixpkgs' win-dll-link.sh, whose worker
+              # `linkDLLsInfolder` does iterate imports to a fixpoint -- but it
+              # resolves each name against LINK_DLL_FOLDERS, which an env hook
+              # fills from ONE level of buildInputs, and when a name is not on
+              # that path it gives up without a word:
+              #
+              #     readarray -d "" pathsFound < <(find "''${searchPaths[@]}" ...)
+              #     if [ ''${#pathsFound[@]} -eq 0 ]; then continue; fi
+              #
+              # So a payload can ship one level short and nothing says so. The
+              # symptom appears much later and somewhere else: LoadLibrary fails
+              # with ERROR_MOD_NOT_FOUND (126) naming the PLUGIN, never the DLL
+              # that is absent, and Qt reports only "The specified module could
+              # not be found".
+              #
+              # A name that is missing from the payload is only acceptable if it
+              # is a Windows system DLL, or if windowsHostLibs above CLAIMS the
+              # host ships it. That claim cannot be checked from here -- only an
+              # assembled application tree has both halves -- so it is echoed at
+              # the end to keep it visible rather than implicit.
+              _objdump=${nixpkgs.lib.escapeShellArg peObjdump}
+              if [ ! -x "$_objdump" ]; then
+                echo "ERROR: no PE-capable objdump at $_objdump" >&2
+                exit 1
+              fi
+
+              _sysdlls=${nixpkgs.lib.escapeShellArg (nixpkgs.lib.concatStringsSep " " windowsSystemDlls)}
+              _is_system_dll() {
+                local _b="''${1,,}" _s
+                _b="''${_b%.dll}"; _b="''${_b%.drv}"; _b="''${_b%.exe}"
+                case "$_b" in api-ms-win-*|ext-ms-*) return 0 ;; esac
+                for _s in $_sysdlls; do [ "$_b" = "$_s" ] && return 0; done
+                return 1
+              }
+              _is_host_claimed() {
+                local _p
+                shopt -s nocasematch
+                for _p in ${nixpkgs.lib.escapeShellArgs windowsHostLibs}; do
+                  if [[ "$1" == $_p ]]; then shopt -u nocasematch; return 0; fi
+                done
+                shopt -u nocasematch
+                return 1
+              }
+
+              # Index what the payload actually contains. lgpm flattens the
+              # payload into modules/<name>/, so every file in it ends up beside
+              # the plugin: index by base name, ignoring directory.
+              declare -A _have _seen _hostdeps _missing
+              _roots=()
+              while IFS= read -r _f; do
+                _b="$(basename "$_f")"
+                _have["''${_b,,}"]="$_f"
+                case "''${_b,,}" in *.dll|*.exe) _roots+=("$_b") ;; esac
+              done < <(find "$out" -type f 2>/dev/null)
+
+              if [ ''${#_roots[@]} -eq 0 ]; then
+                echo "payload contains no PE file; nothing to verify"
+              else
+                _queue=("''${_roots[@]}")
+                declare -A _from
+                for _r in "''${_roots[@]}"; do _from["''${_r,,}"]="(payload root)"; done
+                _imports_read=0
+                while [ ''${#_queue[@]} -gt 0 ]; do
+                  _n="''${_queue[0]}"; _queue=("''${_queue[@]:1}")
+                  _k="''${_n,,}"
+                  [ -n "''${_seen[$_k]:-}" ] && continue
+                  _seen[$_k]=1
+                  _is_system_dll "$_n" && continue
+                  _p="''${_have[$_k]:-}"
+                  if [ -z "$_p" ]; then
+                    if _is_host_claimed "$_n"; then
+                      _hostdeps[$_n]=1
+                    else
+                      _missing[$_n]="''${_from[$_k]:-?}"
+                    fi
+                    continue
+                  fi
+                  while IFS= read -r _d; do
+                    [ -n "$_d" ] || continue
+                    _imports_read=$((_imports_read + 1))
+                    [ -n "''${_from[''${_d,,}]:-}" ] || _from["''${_d,,}"]="$(basename "$_p")"
+                    _queue+=("$_d")
+                  done < <("$_objdump" -p "$_p" 2>/dev/null | sed -n 's/.*DLL Name: *//p' | tr -d '\r')
+                done
+
+                # Zero imports across a payload that HAS PE files means the
+                # reader failed, not that the payload is dependency-free. That
+                # is the one result that must never be read as a pass.
+                if [ "$_imports_read" -eq 0 ]; then
+                  echo "ERROR: read 0 imports from ''${#_roots[@]} PE file(s) --" >&2
+                  echo "$_objdump has no PE target. This is a measurement failure." >&2
+                  exit 1
+                fi
+
+                if [ -n "''${_missing[*]+x}" ]; then
+                  echo "" >&2
+                  echo "ERROR: the .lgx payload is missing ''${#_missing[@]} DLL(s) that it imports:" >&2
+                  for _n in "''${!_missing[@]}"; do
+                    echo "  $_n   (first reached from ''${_missing[$_n]})" >&2
+                  done
+                  echo "" >&2
+                  echo "These are neither Windows system DLLs nor claimed by the" >&2
+                  echo "windowsHostLibs list above, so nothing will provide them at" >&2
+                  echo "runtime. The usual cause is that the producing derivation's" >&2
+                  echo "linkDLLsInfolder call could not see the providing store path:" >&2
+                  echo "extend LINK_DLL_FOLDERS with the external libraries' closure" >&2
+                  echo "(see logos-plugin-qt lib/buildPlugin.nix) rather than relying" >&2
+                  echo "on direct buildInputs." >&2
+                  exit 1
+                fi
+
+                echo "payload import closure verified over ''${#_roots[@]} PE file(s)," \
+                     "$_imports_read import entries, ''${#_seen[@]} distinct name(s)"
+                if [ -n "''${_hostdeps[*]+x}" ]; then
+                  echo "payload relies on the host for: ''${!_hostdeps[*]}"
+                fi
               fi
             '';
 
