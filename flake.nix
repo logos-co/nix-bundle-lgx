@@ -75,10 +75,29 @@
           # that nix-bundle-dir exists for (patchelf --set-rpath,
           # install_name_tool) has no Windows analogue. logos-plugin-qt already
           # stages the plugin's transitive DLL closure into $out/lib via
-          # linkDLLsInfolder, which is the whole job. bundle.sh is also
-          # ELF/Mach-O only (`file -b` -> Mach-O | ELF, no PE branch), so
-          # calling it here would silently produce a payload with nothing
-          # collected.
+          # linkDLLsInfolder, which is the whole job.
+          #
+          # Do NOT re-derive this bypass from bundle.sh's format dispatch. That
+          # dispatch was once the reason and is no longer: nix-bundle-dir now
+          # carries a full PE path (import-table sweep to a fixpoint, Qt
+          # plugin/QML staging, qt.conf, machine checks), merged and pinned
+          # below. So a reader who checks the dispatch WILL find a PE branch
+          # there and conclude the bypass has expired. It has not.
+          #
+          # The reason that outlives that merge: the Windows payload is produced
+          # by linkDLLsInfolder "$out/lib" in logos-plugin-qt and has never been
+          # round-tripped through the directory bundler. Turning the bypass off
+          # is a deliberate change needing its own end-to-end verification --
+          # not a comment edit, and not a pin bump.
+          #
+          # When someone does try it, test THIS shape first: a Logos module
+          # output is lib/<name>_plugin.dll and nothing else -- no bin/. The PE
+          # path's Phase 2b Qt detection was blind to exactly that shape until
+          # nix-bundle-dir 8bf12dd, because it globbed $out/bin/Qt6*.dll, which
+          # cannot match when Qt is staged beside the importer in lib/. A Qt
+          # module bundle exited 0 with the entire Windows Qt contract
+          # unevaluated. The failure mode to expect here is a silent green, not
+          # an error.
           # DLLs the Logos host already ships in its own bin/. Windows binds an import to a module
           # already loaded under that base name BEFORE searching any directory,
           # so a duplicate here would be inert rather than dangerous -- but
