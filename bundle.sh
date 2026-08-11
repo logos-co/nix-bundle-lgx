@@ -33,19 +33,40 @@ LGX_FILE="${PACKAGE_NAME}.lgx"
 ICON_STAGE_FILE=""
 ICON_BASENAME=""
 if [[ -n "${MODULE_SRC:-}" ]]; then
-  read -r ICON_BASENAME ICON_STAGE_FILE < <(python3 - "$METADATA_FILE" "$MODULE_SRC" <<'PY'
-import json, sys, os
+  # Command substitution (not process substitution) so a non-zero exit from
+  # the validator actually fails the build -- PIPESTATUS does not see through
+  # `< <(...)`.
+  ICON_RESULT="$(python3 - "$METADATA_FILE" "$MODULE_SRC" <<'PY'
+import json, os, struct, sys
 
 with open(sys.argv[1]) as f:
     metadata = json.load(f)
 module_src = sys.argv[2]
 
 icon_value = metadata.get("icon", "")
+pkg_type = metadata.get("type", "")
+
+SPEC = "  spec:     logos-package/docs/spec.md#icon-contract"
+
+def fail(lines):
+    # stdout carries the "basename path" result the shell reads; emit a blank
+    # placeholder so the read doesn't block, then die on stderr.
+    print(" ")
+    for line in lines:
+        print(line, file=sys.stderr)
+    sys.exit(1)
+
 if not icon_value:
+    # UI packages render a tile in the App Manager, sidebar and launcher, so
+    # they must ship artwork. Core modules have no such surface.
+    if pkg_type == "ui_qml":
+        fail(["ERROR: metadata.json is missing 'icon'.",
+              "  ui_qml packages must ship a 256x256 PNG icon.",
+              SPEC])
     print(" ")
     sys.exit(0)
 
-# QRC path ":/icons/foo.png" -> strip leading ":/" to get relative path
+# Legacy qrc form ":/icons/foo.png" -> strip the prefix.
 if icon_value.startswith(":/"):
     rel_path = icon_value[2:]
 elif icon_value.startswith(":"):
@@ -53,20 +74,47 @@ elif icon_value.startswith(":"):
 else:
     rel_path = icon_value
 
-# Search for the icon file in likely locations within the module source
 candidates = [
     os.path.join(module_src, "src", rel_path),
     os.path.join(module_src, rel_path),
 ]
-for candidate in candidates:
-    if os.path.isfile(candidate):
-        print(f"{os.path.basename(candidate)} {candidate}")
-        sys.exit(0)
+found = None
+for c in candidates:
+    if os.path.isfile(c):
+        found = c
+        break
 
-print(f"Warning: icon file not found for '{icon_value}' in {module_src}", file=sys.stderr)
-print(" ")
+if not found:
+    fail(["ERROR: icon file not found for '%s'." % icon_value,
+          "  searched: %s" % ", ".join(candidates),
+          SPEC])
+
+# Validate PNG magic + exact dimensions straight out of IHDR. Fixed offsets,
+# so this needs no image library and keeps the nix closure free of one. This
+# checks DECLARED dimensions only -- it is not a defence against a malicious
+# payload, which is the fetch/decode boundary's job.
+with open(found, "rb") as f:
+    head = f.read(26)
+
+def reject(actual):
+    fail(["ERROR: icon does not match the Logos icon standard.",
+          "  file:     %s" % found,
+          "  expected: PNG, exactly 256x256",
+          "  actual:   %s" % actual,
+          SPEC])
+
+if head[:8] != b"\x89PNG\r\n\x1a\n":
+    reject("not a PNG")
+
+w = struct.unpack(">I", head[16:20])[0]
+h = struct.unpack(">I", head[20:24])[0]
+if (w, h) != (256, 256):
+    reject("PNG, %dx%d" % (w, h))
+
+print("%s %s" % (os.path.basename(found), found))
 PY
-  )
+)" || exit 1
+  read -r ICON_BASENAME ICON_STAGE_FILE <<< "$ICON_RESULT"
 fi
 
 # Patch the manifest with metadata from the module's metadata.json (read at eval time).
@@ -92,11 +140,10 @@ for member, data in members:
         for key in ('name', 'display_name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'view'):
             if metadata.get(key):
                 manifest[key] = metadata[key]
-        # Set icon to the bundled filename (or keep the raw value if file was not found)
-        if icon_basename:
-            manifest['icon'] = icon_basename
-        elif metadata.get('icon'):
-            manifest['icon'] = metadata['icon']
+        # `icon` is deliberately NOT set here. `lgx add --icon` writes the
+        # bytes to assets/icon.png and points the manifest at it; overwriting
+        # the field from metadata.json would clobber that canonical path with
+        # an author-relative one that nothing can resolve.
         data = json.dumps(manifest, indent=2).encode()
         member.size = len(data)
     patched.append((member, data))
@@ -212,27 +259,25 @@ if [[ -n "${EXTRA_DIRS:-}" ]]; then
 fi
 
 # Copy the icon into the staging directory so it ships inside the variant.
-#
-# chmod u+w is NOT cosmetic. The icon is copied straight out of the Nix store,
-# where everything is 0444, and plain `cp` gives the destination the source's
-# mode -- so the icon was the ONE file in the payload that shipped read-only.
-# (Every other staging path above already does `chmod -R u+w`; these two copies
-# were the exception.) On Windows the extractor maps that to
-# FILE_ATTRIBUTE_READONLY, and Windows refuses to DELETE a read-only file --
-# where POSIX consults only the parent directory's write bit. The result:
-# `fs::remove_all` on the temp extraction directory threw an uncaught
-# filesystem_error after a successful install, so the install reply was never
-# sent and the package manager showed "Retry" for a package that had installed
-# perfectly; uninstall and upgrade failed the same way with "Access is denied".
+# The icon is NOT staged into the variant — at manifest 0.4.0 it lives once at
+# the package root (assets/icon.png) so it is variant-independent and readable
+# without unpacking a platform build. `lgx add --icon` places it there.
 if [[ -n "$ICON_STAGE_FILE" && -f "$ICON_STAGE_FILE" ]]; then
-  cp "$ICON_STAGE_FILE" "$STAGE_DIR/$ICON_BASENAME"
-  chmod u+w "$STAGE_DIR/$ICON_BASENAME"
-  echo "Bundled icon: $ICON_BASENAME"
+  echo "Bundling icon: $ICON_BASENAME -> assets/icon.png"
 fi
 
-# Nothing in a payload should ship read-only, for the reason above. Assert it
-# rather than trusting the chmods, because the failure is invisible on the
-# build host and only appears on Windows at uninstall time.
+# Nothing in a payload may ship read-only: Windows refuses to DELETE a file
+# carrying FILE_ATTRIBUTE_READONLY, where POSIX consults only the parent
+# directory's write bit. A single such file made `fs::remove_all` throw after a
+# SUCCESSFUL install, so the reply was never sent and the package manager showed
+# "Retry"; uninstall and upgrade failed the same way with "Access is denied".
+#
+# The icon was the one offender -- copied straight out of the 0444 Nix store by
+# a plain `cp`, while every other staging path here does `chmod -R u+w`. It no
+# longer lands in the variant at all, so this is now a guard against the NEXT
+# staging path added without a chmod rather than a check on a live failure.
+# Keep it: the failure is invisible on the build host and only ever appears on
+# Windows, at uninstall time.
 if find "$STAGE_DIR" -type f ! -writable -print -quit | grep -q .; then
   echo "ERROR: payload contains read-only file(s); they cannot be deleted on Windows:" >&2
   find "$STAGE_DIR" -type f ! -writable >&2
@@ -253,18 +298,25 @@ if [[ "$PKG_TYPE" == "ui_qml" ]]; then
   fi
 fi
 
+ICON_ARGS=()
+if [[ -n "$ICON_STAGE_FILE" && -f "$ICON_STAGE_FILE" ]]; then
+  ICON_ARGS=(--icon "$ICON_STAGE_FILE")
+fi
+
 if [[ -n "$MAIN_FILE" ]]; then
   echo "Adding variant $VARIANT to $LGX_FILE (main: $MAIN_FILE)..."
   lgx add "$LGX_FILE" \
     --variant "$VARIANT" \
     --files "$STAGE_DIR/." \
     --main "$MAIN_FILE" \
+    "${ICON_ARGS[@]+"${ICON_ARGS[@]}"}" \
     -y
 else
   echo "Adding variant $VARIANT to $LGX_FILE (no backend main entry)..."
   lgx add "$LGX_FILE" \
     --variant "$VARIANT" \
     --files "$STAGE_DIR/." \
+    "${ICON_ARGS[@]+"${ICON_ARGS[@]}"}" \
     -y
 fi
 
@@ -306,13 +358,13 @@ if [[ "${DUAL_VARIANT:-}" == "1" && -n "${DEV_SRC_DRV:-}" && -n "${DEV_VARIANT:-
     done <<< "$EXTRA_DIRS"
   fi
 
-  # Copy icon into dev staging directory. Same chmod + assertion as the
-  # portable path above -- see the comment there for why a read-only payload
-  # file breaks install, uninstall and upgrade on Windows.
   if [[ -n "$ICON_STAGE_FILE" && -f "$ICON_STAGE_FILE" ]]; then
-    cp "$ICON_STAGE_FILE" "$DEV_STAGE_DIR/$ICON_BASENAME"
-    chmod u+w "$DEV_STAGE_DIR/$ICON_BASENAME"
+    :  # icon lives at the package root, not per-variant (see above)
   fi
+
+  # Same read-only assertion as the portable path above -- see the comment
+  # there for why a read-only payload file breaks install, uninstall and
+  # upgrade on Windows.
   if find "$DEV_STAGE_DIR" -type f ! -writable -print -quit | grep -q .; then
     echo "ERROR: dev payload contains read-only file(s); they cannot be deleted on Windows:" >&2
     find "$DEV_STAGE_DIR" -type f ! -writable >&2
@@ -334,12 +386,14 @@ if [[ "${DUAL_VARIANT:-}" == "1" && -n "${DEV_SRC_DRV:-}" && -n "${DEV_VARIANT:-
       --variant "$DEV_VARIANT" \
       --files "$DEV_STAGE_DIR/." \
       --main "$MAIN_FILE" \
+      "${ICON_ARGS[@]+"${ICON_ARGS[@]}"}" \
       -y
   else
     echo "Adding dev variant $DEV_VARIANT to $LGX_FILE (no backend main entry)..."
     lgx add "$LGX_FILE" \
       --variant "$DEV_VARIANT" \
       --files "$DEV_STAGE_DIR/." \
+      "${ICON_ARGS[@]+"${ICON_ARGS[@]}"}" \
       -y
   fi
 
