@@ -166,6 +166,11 @@
             "winhttp" "wininet" "psapi" "cfgmgr32" "uiautomationcore"
             "windowscodecs" "avicap32" "msimg32" "powrprof" "propsys" "usp10"
             "wintrust" "avrt"
+            # Ships with Windows 8+ and is where ProcessPrng lives, which Rust's
+            # `std` has used for its RNG since 1.78 -- so EVERY Rust module's
+            # plugin imports it. Absent from this list it looked like a payload
+            # that forgot a dependency, and blocked packaging chat_module.
+            "bcryptprimitives"
           ];
 
           # A PE-capable objdump. NOT `pkgs.pkgsBuildBuild.binutils`: plain
