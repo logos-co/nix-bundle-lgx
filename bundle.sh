@@ -140,6 +140,17 @@ for member, data in members:
         for key in ('name', 'display_name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'view'):
             if metadata.get(key):
                 manifest[key] = metadata[key]
+        # `provides` — INTENT NAMES ONLY.
+        provides = metadata.get('provides')
+        if isinstance(provides, list):
+            entries = []
+            for entry in provides:
+                if isinstance(entry, str):
+                    entries.append({'intent': entry})
+                elif isinstance(entry, dict) and isinstance(entry.get('intent'), str):
+                    entries.append({'intent': entry['intent']})
+            if entries:
+                manifest['provides'] = entries
         # `icon` is deliberately NOT set here. `lgx add --icon` writes the
         # bytes to assets/icon.png and points the manifest at it; overwriting
         # the field from metadata.json would clobber that canonical path with
