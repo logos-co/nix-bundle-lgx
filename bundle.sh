@@ -137,7 +137,7 @@ patched = []
 for member, data in members:
     if member.name == 'manifest.json':
         manifest = json.loads(data)
-        for key in ('name', 'display_name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'view'):
+        for key in ('name', 'display_name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'optional_dependencies', 'view'):
             if metadata.get(key):
                 manifest[key] = metadata[key]
         # `provides` — INTENT NAMES ONLY.
@@ -151,6 +151,14 @@ for member, data in members:
                     entries.append({'intent': entry['intent']})
             if entries:
                 manifest['provides'] = entries
+        # `interface_dependencies` is TRANSFORMED for the same reason `provides`
+        # is: metadata.json entries carry `file`/`input`/`impl_class`, which are
+        # paths into flake inputs and the author's source tree and mean nothing
+        # in a built package. The manifest carries the interface NAMES.
+        ifaces = [e.get('name') for e in metadata.get('interface_dependencies', [])
+                  if isinstance(e, dict) and e.get('name')]
+        if ifaces:
+            manifest['interface_dependencies'] = ifaces
         # `icon` is deliberately NOT set here. `lgx add --icon` writes the
         # bytes to assets/icon.png and points the manifest at it; overwriting
         # the field from metadata.json would clobber that canonical path with
