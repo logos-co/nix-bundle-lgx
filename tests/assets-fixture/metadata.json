@@ -1,0 +1,9 @@
+{
+  "name": "smokelgx",
+  "version": "0.0.1",
+  "description": "root asset bundler test",
+  "author": "test",
+  "type": "core",
+  "category": "test",
+  "main": "libsmokelgx"
+}

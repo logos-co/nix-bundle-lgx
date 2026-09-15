@@ -122,6 +122,13 @@ cat > subject/metadata.json <<'J'
 }
 J
 
+cat > subject/interface.lidl <<'LIDL'
+module smokelgx {
+  depends []
+  fn answer() -> i32
+}
+LIDL
+
 # The subject follows the bundler's own nixpkgs and logos-package, so the
 # compiler that builds it and the `lgx` that inspects it are the exact ones
 # this repo pins -- no registry, no second nixpkgs to fetch.
@@ -150,11 +157,13 @@ cat > subject/flake.nix <<NIX
           # decoy/ is neither bin/ nor lib/, so no bundler ever copies it and
           # it cannot leak into the package.
           installPhase = ''
-            mkdir -p \$out/lib \$out/bin \$out/decoy
+            mkdir -p \$out/lib \$out/bin \$out/decoy \$out/share/logos
             cp libsmokelgx.so smokelgx_probe \$out/lib/
             cp smokelgx_probe \$out/bin/
             cp decoy.so \$out/decoy/libsmokelgx.so
+            cp interface.lidl \$out/share/logos/smokelgx.lidl
           '';
+          passthru.lgxAssets = { lidl = "share/logos"; };
         };
       };
     };
@@ -178,6 +187,8 @@ echo "== the package (preconditions, not bump-sensitive) =="
 # below for the wrong reason, or the whole file would assert nothing at all.
 "$LGX" verify "$PKG" || die "lgx verify rejected the package it just built"
 ok "lgx verify"
+check "the canonical LIDL asset is stored once at package root" \
+      "[ \"\$(tar -tzf '$PKG' | grep -c '^assets/lidl/smokelgx.lidl$')\" -eq 1 ]"
 "$LGX" extract "$PKG" -v "$VARIANT" -o payload >/dev/null || die "lgx extract -v $VARIANT failed"
 # lgx may unpack into payload/ or payload/<variant>/; find the module either way.
 # Capture the find result first: `dirname ""` is `.`, which is a real directory,
@@ -189,6 +200,10 @@ ok "the payload carries the module named by metadata.json"
 PROBE="$P/smokelgx_probe"
 check "the payload carries the probe next to the module" "[ -f '$PROBE' ]"
 check "the probe kept its executable bit through the tar" "[ -x '$PROBE' ]"
+check "the extracted package carries its platform-independent LIDL asset" \
+      "[ -f '$P/assets/lidl/smokelgx.lidl' ]"
+check "the LIDL source directory was not copied into the platform variant" \
+      "[ ! -e '$P/share/logos/smokelgx.lidl' ]"
 
 echo
 echo "== payload contract (each of these fails on the previous pin) =="

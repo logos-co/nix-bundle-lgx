@@ -347,7 +347,10 @@
             else drv: mkBundleDir {
             inherit drv;
             name = drv.pname or drv.name or "bundle";
-            extraDirs = drv.extraDirs or [];
+            # Root LGX assets must survive portable relocation, but bundle.sh
+            # keeps them out of the variant payload and installs them once.
+            extraDirs = (drv.extraDirs or [])
+              ++ builtins.attrValues (drv.lgxAssets or {});
             hostLibs = (drv.hostLibs or []) ++ [
               "Qt*"
               "libQt*"
@@ -413,6 +416,11 @@
                 else ".so";
               MODULE_SRC = if moduleSrc != null then moduleSrc else "";
               EXTRA_DIRS = builtins.concatStringsSep "\n" (drv.extraDirs or []);
+              # target<TAB>source-dir, both relative to the derivation output.
+              LGX_ASSET_DIRS = builtins.concatStringsSep "\n"
+                (nixpkgs.lib.mapAttrsToList
+                  (target: source: "${target}\t${source}")
+                  (drv.lgxAssets or {}));
 
               buildPhase = ''
                 bash ${./bundle.sh}
@@ -442,5 +450,54 @@
           # Produce a dual-variant package containing both portable and dev variants.
           dual = mkLgxBundle { mode = "dual"; };
         });
+
+      # Exercise derivation -> bundler -> LGX -> extraction on every native
+      # host, including both dev and portable payloads.
+      checks = nixpkgs.lib.genAttrs
+        [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ]
+        (system:
+          let
+            pkgs = import nixpkgs { inherit system; };
+            lgx = logos-package.packages.${system}.lgx;
+            libExt = if pkgs.stdenv.isDarwin then ".dylib" else ".so";
+            subject = pkgs.runCommandCC "smokelgx-root-assets-subject" {
+              pname = "smokelgx";
+              version = "0.0.1";
+              src = ./tests/assets-fixture;
+              passthru.lgxAssets = { lidl = "share/logos"; };
+            } ''
+              mkdir -p $out/lib $out/share/logos
+              cat > module.c <<'EOF'
+              int smokelgx_answer(void) { return 42; }
+              EOF
+              $CC ${if pkgs.stdenv.isDarwin then "-dynamiclib" else "-shared -fPIC"} \
+                -o "$out/lib/libsmokelgx${libExt}" module.c
+              cp "$src/smokelgx.lidl" "$out/share/logos/smokelgx.lidl"
+            '';
+            bundledDev = self.bundlers.${system}.default subject;
+            bundledPortable = self.bundlers.${system}.portable subject;
+          in {
+            root-assets = pkgs.runCommand "nix-bundle-lgx-root-assets-test" {
+              nativeBuildInputs = [ pkgs.gnutar pkgs.gzip lgx ];
+            } ''
+              check_bundle() {
+                bundle="$1"
+                label="$2"
+                package=$(find "$bundle" -name '*.lgx' -print -quit)
+                test -n "$package"
+                tar -tzf "$package" > "$label-entries.txt"
+                test "$(grep -c '^assets/lidl/smokelgx.lidl$' "$label-entries.txt")" -eq 1
+                ! grep -Eq '^variants/[^/]+/share/logos/' "$label-entries.txt"
+
+                mkdir "$label-extracted"
+                lgx extract "$package" --output "$label-extracted"
+                test "$(find "$label-extracted" -path '*/assets/lidl/smokelgx.lidl' | wc -l | tr -d ' ')" -eq 1
+              }
+
+              check_bundle ${bundledDev} dev
+              check_bundle ${bundledPortable} portable
+              mkdir -p $out
+            '';
+          });
     };
 }

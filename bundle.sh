@@ -11,6 +11,8 @@ set -euo pipefail
 #   LIB_EXT       — primary library extension (.dylib or .so)
 #   MODULE_SRC    — path to the module source tree (for resolving icon files etc.)
 #   EXTRA_DIRS    — newline-separated list of extra directories to bundle alongside lib
+#   LGX_ASSET_DIRS — newline-separated target<TAB>source mappings. Sources are
+#                    relative to SRC_DRV and land once at assets/<target>/
 #
 # Dual-variant mode (optional):
 #   DUAL_VARIANT  — set to "1" to add a second (dev) variant
@@ -322,12 +324,48 @@ if [[ -n "$ICON_STAGE_FILE" && -f "$ICON_STAGE_FILE" ]]; then
   ICON_ARGS=(--icon "$ICON_STAGE_FILE")
 fi
 
+# Stage platform-independent derivation outputs separately from the variant.
+ASSETS_STAGE_DIR="$(mktemp -d)"
+HAS_ASSETS=0
+if [[ -n "${LGX_ASSET_DIRS:-}" ]]; then
+  while IFS=$'\t' read -r target source_dir; do
+    [[ -z "$target" && -z "$source_dir" ]] && continue
+    case "$target" in
+      ""|/*|.|..|../*|*/../*|*/..)
+        echo "error: invalid LGX asset target '$target'" >&2
+        exit 1
+        ;;
+    esac
+    case "$source_dir" in
+      ""|/*|.|..|../*|*/../*|*/..)
+        echo "error: invalid LGX asset source '$source_dir'" >&2
+        exit 1
+        ;;
+    esac
+    if [[ ! -d "$SRC_DRV/$source_dir" ]]; then
+      echo "No LGX assets at $SRC_DRV/$source_dir; skipping $target"
+      continue
+    fi
+    mkdir -p "$ASSETS_STAGE_DIR/$target"
+    cp -aL "$SRC_DRV/$source_dir/." "$ASSETS_STAGE_DIR/$target/"
+    chmod -R u+w "$ASSETS_STAGE_DIR/$target"
+    HAS_ASSETS=1
+    echo "Bundled root asset directory: $source_dir -> assets/$target"
+  done <<< "$LGX_ASSET_DIRS"
+fi
+
+ASSET_ARGS=()
+if [[ "$HAS_ASSETS" == "1" ]]; then
+  ASSET_ARGS=(--assets "$ASSETS_STAGE_DIR")
+fi
+
 if [[ -n "$MAIN_FILE" ]]; then
   echo "Adding variant $VARIANT to $LGX_FILE (main: $MAIN_FILE)..."
   lgx add "$LGX_FILE" \
     --variant "$VARIANT" \
     --files "$STAGE_DIR/." \
     --main "$MAIN_FILE" \
+    "${ASSET_ARGS[@]+"${ASSET_ARGS[@]}"}" \
     "${ICON_ARGS[@]+"${ICON_ARGS[@]}"}" \
     -y
 else
@@ -335,11 +373,13 @@ else
   lgx add "$LGX_FILE" \
     --variant "$VARIANT" \
     --files "$STAGE_DIR/." \
+    "${ASSET_ARGS[@]+"${ASSET_ARGS[@]}"}" \
     "${ICON_ARGS[@]+"${ICON_ARGS[@]}"}" \
     -y
 fi
 
 rm -rf "$STAGE_DIR"
+rm -rf "$ASSETS_STAGE_DIR"
 
 # Dual-variant mode: add the dev variant from the raw (non-bundled) derivation.
 if [[ "${DUAL_VARIANT:-}" == "1" && -n "${DEV_SRC_DRV:-}" && -n "${DEV_VARIANT:-}" ]]; then
