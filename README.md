@@ -45,6 +45,26 @@ The `#dual` bundler includes both the portable and dev variant names in a single
 
 All bundlers produce a single `.lgx` file placed in `$out/`. When invoked via `nix bundle -o result`, the result symlink points to that directory.
 
+## Platform-independent assets
+
+A derivation can publish directories that belong once at the package root,
+outside every platform variant, through the `lgxAssets` passthru attribute. The
+attribute maps the destination below `assets/` to a directory relative to the
+derivation output:
+
+```nix
+passthru.lgxAssets = {
+  lidl = "share/logos";
+};
+```
+
+That mapping places `$out/share/logos/*.lidl` at
+`assets/lidl/*.lidl` in the `.lgx`. Portable and dual bundles preserve these
+directories through the relocation pass but do not copy them into the variant
+payload. If multiple mappings or merged platform packages provide the same
+asset path, byte-identical files are deduplicated and differing content fails
+the build.
+
 ## Metadata
 
 The bundler reads `metadata.json` from the derivation's **source tree** (`drv.src`) at Nix eval time — not from the build output. If `metadata.json` is found, the fields `name`, `version`, `description`, `author`, `type`, `category`, `dependencies`, and `view` are patched into the `.lgx` manifest automatically. If not found, the bundler falls back to an empty `{}`.
@@ -64,5 +84,7 @@ The bundler expects the input derivation to expose a `lib/` subdirectory contain
 $out/
   lib/
     libfoo.dylib   # or libfoo.so
+  share/logos/     # optional canonical LIDL contracts
+    foo.lidl
   metadata.json    # optional
 ```
