@@ -6,7 +6,7 @@ A [Nix bundler](https://nixos.org/manual/nix/stable/command-ref/new-cli/nix3-bun
 
 ### `#default` (dev)
 
-Wraps the derivation's `lib/` directory directly into an `.lgx` package with a **dev variant** (`-dev` suffix). Dynamic libraries are **not** relocated — they continue to resolve dependencies from `/nix/store` at runtime. Suitable for environments where the Nix store is available.
+Wraps the derivation's `lib/` directory directly into an `.lgx` package with a **dev variant** (`-dev` suffix). Dynamic libraries are **not** relocated — they continue to resolve dependencies from `/nix/store` at runtime. Suitable for environments where the Nix store is available. The bundle's output depends on the derivation (see [Output](#output)), so fetching the bundle from a binary cache also fetches the store paths the payload loads.
 
 ```bash
 nix bundle --bundler github:logos-co/nix-bundle-lgx .#lib
@@ -43,7 +43,9 @@ The `#dual` bundler includes both the portable and dev variant names in a single
 
 ## Output
 
-All bundlers produce a single `.lgx` file placed in `$out/`. When invoked via `nix bundle -o result`, the result symlink points to that directory.
+All bundlers produce a single `.lgx` file placed in `$out/`. When invoked via `nix bundle -o result`, the result symlink points to that directory. Find the package with a `*.lgx` pattern rather than taking every entry in `$out/`.
+
+The `#default` and `#dual` bundlers also write `$out/nix-support/lgx-payload-closure`, which contains the store path of the raw derivation. The `.lgx` is compressed, so Nix cannot see the store paths inside it; this file is what makes Nix record the dev payload and its runtime closure as dependencies of the output. `#portable` bundles and Windows bundles do not write it, because their payloads load nothing from `/nix/store`.
 
 ## Platform-independent assets
 
