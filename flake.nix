@@ -472,14 +472,18 @@
               pname = "smokelgx";
               version = "0.0.1";
               src = ./tests/assets-fixture;
+              # A nixpkgs library the payload loads from the store (payload-closure).
+              buildInputs = [ pkgs.zlib ];
               passthru.lgxAssets = { lidl = "share/logos"; };
             } ''
               mkdir -p $out/lib $out/share/logos
               cat > module.c <<'EOF'
+              #include <zlib.h>
               int smokelgx_answer(void) { return 42; }
+              const char* smokelgx_zlib(void) { return zlibVersion(); }
               EOF
               $CC ${if pkgs.stdenv.isDarwin then "-dynamiclib" else "-shared -fPIC"} \
-                -o "$out/lib/libsmokelgx${libExt}" module.c
+                -o "$out/lib/libsmokelgx${libExt}" module.c -lz
               cp "$src/smokelgx.lidl" "$out/share/logos/smokelgx.lidl"
             '';
             bundledDev = self.bundlers.${system}.default subject;
@@ -487,16 +491,19 @@
             bundledDual = self.bundlers.${system}.dual subject;
             closureOf = drv: "${pkgs.closureInfo { rootPaths = [ drv ]; }}/store-paths";
           in {
-            # Substituting a dev or dual .lgx must bring the payload it loads from the
-            # store; a portable one must not drag it along.
+            # Substituting a dev or dual .lgx must bring the payload and the libraries it
+            # loads from the store; a portable one must not drag them along.
             payload-closure = pkgs.runCommand "nix-bundle-lgx-payload-closure-test" { } ''
               set -euo pipefail
-              carries() { grep -qxF ${subject} "$1"; }
-              carries ${closureOf bundledDev} \
-                || { echo "FAIL: the dev bundle does not carry its payload ${subject}"; exit 1; }
-              carries ${closureOf bundledDual} \
-                || { echo "FAIL: the dual bundle does not carry its payload ${subject}"; exit 1; }
-              if carries ${closureOf bundledPortable}; then
+              carries() {  # <label> <closure>
+                grep -qxF ${subject} "$2" \
+                  || { echo "FAIL: the $1 bundle does not carry its payload ${subject}"; exit 1; }
+                grep -qxF ${pkgs.zlib.out} "$2" \
+                  || { echo "FAIL: the $1 bundle does not carry ${pkgs.zlib.out}, which its payload links"; exit 1; }
+              }
+              carries dev ${closureOf bundledDev}
+              carries dual ${closureOf bundledDual}
+              if grep -qxF ${subject} ${closureOf bundledPortable}; then
                 echo "FAIL: the portable bundle carries its payload's closure"; exit 1
               fi
               test "$(find ${bundledPortable} -mindepth 1 | wc -l | tr -d ' ')" -eq 1 \
