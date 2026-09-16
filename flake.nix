@@ -395,6 +395,14 @@
               # Source directory of the module (for resolving icon paths etc.)
               moduleSrc =
                 if drv ? src then "${drv.src}" else null;
+
+              # A gzipped .lgx hides the store paths its dev payload loads; naming the payload
+              # gives the .lgx that closure. Portable and Windows payloads load none.
+              recordPayloadClosure =
+                nixpkgs.lib.optionalString (mode != "portable" && !pkgs.stdenv.hostPlatform.isWindows) ''
+                  mkdir -p $out/nix-support
+                  echo "${drv}" > $out/nix-support/lgx-payload-closure
+                '';
             in
             pkgs.stdenv.mkDerivation ({
               pname = "${name}-lgx";
@@ -429,35 +437,7 @@
               installPhase = ''
                 mkdir -p $out
                 cp *.lgx $out/
-
-                # An .lgx is a gzipped tar, so Nix's reference scanner cannot
-                # see the /nix/store paths embedded in the binaries inside it:
-                # the .lgx derivation ends up with an EMPTY closure. That is
-                # harmless when the .lgx is built locally (the payload's own
-                # closure is already realised on the way), but fatal when it is
-                # substituted from a binary cache onto a machine that has never
-                # built it — every store path the payload dlopen()s is missing,
-                # and the module crashes on load with "Library not loaded".
-                #
-                # Record the payload derivation in a plain-text file so the
-                # scanner sees it and Nix registers it as a runtime reference.
-                # Substituting the .lgx then also brings its payload closure,
-                # which is what the -dev variant's "dynamic libraries resolve
-                # from /nix/store at runtime" contract actually requires.
-                #
-                # Only for the dev payload. A portable variant has been through
-                # nix-bundle-dir: its libraries are copied in and its install
-                # names rewritten off the store (on darwin, e.g.
-                # /nix/store/…-libcxx-16.0.6/lib/libc++.1.0.dylib becomes
-                # /usr/lib/libc++.1.dylib), so it resolves nothing from
-                # /nix/store and needs no closure. Recording one there would
-                # only make it drag a closure it never reads.
-                ${nixpkgs.lib.optionalString (mode != "portable") ''
-                  mkdir -p $out/nix-support
-                  echo "${if mode == "dual" then "$DEV_SRC_DRV" else "$SRC_DRV"}" \
-                    > $out/nix-support/lgx-payload-closure
-                ''}
-              '';
+              '' + recordPayloadClosure;
             } // (if mode == "dual" then {
               # For dual mode, also pass the raw (dev) derivation so bundle.sh
               # can add it as a second variant.
@@ -504,7 +484,26 @@
             '';
             bundledDev = self.bundlers.${system}.default subject;
             bundledPortable = self.bundlers.${system}.portable subject;
+            bundledDual = self.bundlers.${system}.dual subject;
+            closureOf = drv: "${pkgs.closureInfo { rootPaths = [ drv ]; }}/store-paths";
           in {
+            # Substituting a dev or dual .lgx must bring the payload it loads from the
+            # store; a portable one must not drag it along.
+            payload-closure = pkgs.runCommand "nix-bundle-lgx-payload-closure-test" { } ''
+              set -euo pipefail
+              carries() { grep -qxF ${subject} "$1"; }
+              carries ${closureOf bundledDev} \
+                || { echo "FAIL: the dev bundle does not carry its payload ${subject}"; exit 1; }
+              carries ${closureOf bundledDual} \
+                || { echo "FAIL: the dual bundle does not carry its payload ${subject}"; exit 1; }
+              if carries ${closureOf bundledPortable}; then
+                echo "FAIL: the portable bundle carries its payload's closure"; exit 1
+              fi
+              test "$(find ${bundledPortable} -mindepth 1 | wc -l | tr -d ' ')" -eq 1 \
+                || { echo "FAIL: the portable bundle is not just its .lgx"; exit 1; }
+              mkdir -p $out
+            '';
+
             root-assets = pkgs.runCommand "nix-bundle-lgx-root-assets-test" {
               nativeBuildInputs = [ pkgs.gnutar pkgs.gzip lgx ];
             } ''

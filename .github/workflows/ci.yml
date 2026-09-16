@@ -44,6 +44,11 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
         continue-on-error: true   # a fork without the secret still gets to run
 
+      - name: Flake checks
+        run: |
+          system=$(nix eval --impure --raw --expr builtins.currentSystem)
+          nix build -L ".#checks.$system.payload-closure" ".#checks.$system.root-assets"
+
       - name: Payload contract + cross-distro run
         env:
           # Pin tags so a moving :latest cannot invent unrelated failures.
