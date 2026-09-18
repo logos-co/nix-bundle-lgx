@@ -171,6 +171,10 @@
             # plugin imports it. Absent from this list it looked like a payload
             # that forgot a dependency, and blocked packaging chat_module.
             "bcryptprimitives"
+            # The PC/SC smart-card API, in System32 since XP. The `pcsc` crate
+            # links it, so any module reaching a hardware wallet imports it --
+            # lez_core does, through the keycard support in wallet_ffi.
+            "winscard"
           ];
 
           # A PE-capable objdump. NOT `pkgs.pkgsBuildBuild.binutils`: plain
