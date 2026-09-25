@@ -355,13 +355,14 @@
             # keeps them out of the variant payload and installs them once.
             extraDirs = (drv.extraDirs or [])
               ++ builtins.attrValues (drv.lgxAssets or {});
+            # Not libiconv/libcharset: on Darwin nixpkgs has two libiconv.2.dylib
+            # (Apple's for the host's Qt, GNU's for libidn2 behind libcurl), so
+            # the host's copy cannot stand in for a module's.
             hostLibs = (drv.hostLibs or []) ++ [
               "Qt*"
               "libQt*"
               "liblogos_core*"
               "liblogos_sdk*"
-              "libcharset*"
-              "libiconv*"
               "libintl*"
               "liblgx*"
               "libz*"
@@ -490,6 +491,20 @@
                 -o "$out/lib/libsmokelgx${libExt}" module.c -lz
               cp "$src/smokelgx.lidl" "$out/share/logos/smokelgx.lidl"
             '';
+            # Links GNU libiconv, as libidn2 behind libcurl does.
+            iconvSubject = pkgs.runCommandCC "smokelgx-iconv-subject" {
+              pname = "smokeiconv";
+              version = "0.0.1";
+              src = ./tests/iconv-fixture;
+            } ''
+              mkdir -p $out/lib
+              cat > module.c <<'EOF'
+              #include <iconv.h>
+              int smokeiconv_open(void) { return iconv_open("UTF-8", "LATIN1") != (iconv_t)-1; }
+              EOF
+              $CC -dynamiclib -o "$out/lib/libsmokeiconv.dylib" module.c \
+                -I${pkgs.libiconvReal}/include -L${pkgs.libiconvReal}/lib -liconv
+            '';
             bundledDev = self.bundlers.${system}.default subject;
             bundledPortable = self.bundlers.${system}.portable subject;
             bundledDual = self.bundlers.${system}.dual subject;
@@ -534,6 +549,23 @@
 
               check_bundle ${bundledDev} dev
               check_bundle ${bundledPortable} portable
+              mkdir -p $out
+            '';
+          } // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+            # The host's libiconv.2.dylib is Apple's, without _libiconv: a payload
+            # linking GNU's must ship its own.
+            ships-gnu-libiconv = pkgs.runCommand "nix-bundle-lgx-gnu-libiconv-test" {
+              nativeBuildInputs = [ lgx pkgs.darwin.cctools ];
+            } ''
+              package=$(find ${self.bundlers.${system}.portable iconvSubject} -name '*.lgx' -print -quit)
+              lgx extract "$package" --output extracted
+              lib=$(find extracted -name libsmokeiconv.dylib -print -quit)
+              test -n "$lib" || { echo "FAIL: no payload in $package"; exit 1; }
+              if otool -L "$lib" | grep -q '@rpath/libiconv'; then
+                echo "FAIL: its libiconv was left to the host:"; otool -L "$lib"; exit 1
+              fi
+              test -n "$(find "$(dirname "$lib")" -name 'libiconv.2.dylib')" \
+                || { echo "FAIL: the payload does not ship its libiconv"; exit 1; }
               mkdir -p $out
             '';
           });
