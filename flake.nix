@@ -175,6 +175,12 @@
             # links it, so any module reaching a hardware wallet imports it --
             # lez_core does, through the keycard support in wallet_ffi.
             "winscard"
+            # The Universal CRT, part of Windows since 10 and installed on
+            # 7/8.1 by the Visual C++ redistributable that every Qt host
+            # already requires. Same class as "msvcrt" above: a mingw build
+            # linked against the ucrt import libs pulls it in for file and
+            # string routines, so any module built that way needs it here.
+            "ucrtbase"
           ];
 
           # A PE-capable objdump. NOT `pkgs.pkgsBuildBuild.binutils`: plain
