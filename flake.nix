@@ -175,6 +175,10 @@
             # links it, so any module reaching a hardware wallet imports it --
             # lez_core does, through the keycard support in wallet_ffi.
             "winscard"
+            # The COM base library, in System32 since Windows 8. windows-sys 0.61
+            # links CoTaskMemFree from it, so a crate that frees a shell-allocated
+            # string imports it -- zcash_proofs does, through known-folders.
+            "combase"
           ];
 
           # A PE-capable objdump. NOT `pkgs.pkgsBuildBuild.binutils`: plain
