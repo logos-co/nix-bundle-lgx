@@ -179,6 +179,10 @@
             # links CoTaskMemFree from it, so a crate that frees a shell-allocated
             # string imports it -- zcash_proofs does, through known-folders.
             "combase"
+            # The USB HID API, in System32 since Windows 2000. hidapi's native
+            # backend links it, so a module reaching a hardware wallet over HID
+            # imports it -- keycard_shell_module does, for the Keycard Shell.
+            "hid"
           ];
 
           # A PE-capable objdump. NOT `pkgs.pkgsBuildBuild.binutils`: plain
