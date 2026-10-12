@@ -142,7 +142,9 @@ for member, data in members:
         for key in ('name', 'display_name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'optional_dependencies', 'view'):
             if metadata.get(key):
                 manifest[key] = metadata[key]
-        # `provides` — INTENT NAMES ONLY.
+        # `provides` — intent names, plus `web` where the author published the
+        # intent to basecamp:// links: a catalog then lets a link reach the
+        # install offer for a package that is not installed
         provides = metadata.get('provides')
         if isinstance(provides, list):
             entries = []
@@ -150,7 +152,10 @@ for member, data in members:
                 if isinstance(entry, str):
                     entries.append({'intent': entry})
                 elif isinstance(entry, dict) and isinstance(entry.get('intent'), str):
-                    entries.append({'intent': entry['intent']})
+                    kept = {'intent': entry['intent']}
+                    if entry.get('web') is True:
+                        kept['web'] = True
+                    entries.append(kept)
             if entries:
                 manifest['provides'] = entries
         # `interface_dependencies` is TRANSFORMED for the same reason `provides`
