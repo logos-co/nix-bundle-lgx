@@ -67,11 +67,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1791812263,
-        "narHash": "sha256-MdLslLlxDCgCRYAVoZ18ISIdYL7Vr2ksQGrDE/vuB+4=",
+        "lastModified": 1793096113,
+        "narHash": "sha256-GgkWWs/xp8sDNx1zx6K9Kjc7fbAirYZvxs+udB9t5A0=",
         "owner": "logos-co",
         "repo": "logos-package",
-        "rev": "85a2c45d9f753d7d5162a32a34ff040193f28716",
+        "rev": "4099308fde589d300c5d378019d01cfbcdedf169",
         "type": "github"
       },
       "original": {

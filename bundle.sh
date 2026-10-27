@@ -139,7 +139,7 @@ patched = []
 for member, data in members:
     if member.name == 'manifest.json':
         manifest = json.loads(data)
-        for key in ('name', 'display_name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'optional_dependencies', 'view'):
+        for key in ('name', 'display_name', 'version', 'description', 'author', 'type', 'category', 'dependencies', 'optional_dependencies', 'view', 'backend'):
             if metadata.get(key):
                 manifest[key] = metadata[key]
         # `provides` — intent names, plus `web` where the author published the

@@ -61,3 +61,6 @@ jobs:
 
       - name: provides keeps the web opt-in
         run: bash tests/provides-web.sh .
+
+      - name: manifest keeps the backend module
+        run: bash tests/manifest-backend.sh .
