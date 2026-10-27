@@ -183,6 +183,10 @@
             # backend links it, so a module reaching a hardware wallet over HID
             # imports it -- keycard_shell_module does, for the Keycard Shell.
             "hid"
+            # The Performance Data Helper, in System32 since Windows NT 4. sysinfo
+            # links it for CPU counters, and Arti, the Rust Tor, depends on sysinfo
+            # for its memory quota -- so tor_module imports it.
+            "pdh"
           ];
 
           # A PE-capable objdump. NOT `pkgs.pkgsBuildBuild.binutils`: plain
