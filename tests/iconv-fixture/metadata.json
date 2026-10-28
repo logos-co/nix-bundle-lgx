@@ -1,0 +1,9 @@
+{
+  "name": "smokeiconv",
+  "version": "0.0.1",
+  "description": "a payload linking GNU libiconv",
+  "author": "test",
+  "type": "core",
+  "category": "test",
+  "main": "libsmokeiconv"
+}
